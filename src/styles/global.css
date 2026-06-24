@@ -1,0 +1,88 @@
+:root {
+  --bg: #0f1116;
+  --panel: #1a1d27;
+  --panel2: #232735;
+  --ink: #e8eaf0;
+  --muted: #9aa3b5;
+  --accent: #f5b301;
+  --up: #36c275;
+  --down: #e2566f;
+  --line: #2c3142;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: 'Noto Sans KR', system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+a { color: var(--accent); }
+.wrap { max-width: 920px; margin: 0 auto; padding: 16px; }
+header.top {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap;
+}
+header.top h1 { font-size: 18px; margin: 0; }
+.spacer { flex: 1; }
+nav.tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+nav.tabs button {
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+  padding: 7px 12px; border-radius: 8px; cursor: pointer; font-size: 14px;
+}
+nav.tabs button.active { background: var(--accent); color: #1a1200; border-color: var(--accent); font-weight: 700; }
+
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+.card h3 { margin: 0 0 10px; font-size: 15px; }
+.section-title { font-size: 13px; color: var(--muted); margin: 18px 0 8px; letter-spacing: .03em; }
+
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+
+input, select {
+  background: var(--panel2); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; font-size: 14px;
+}
+input[type="number"] { width: 90px; }
+button.primary {
+  background: var(--accent); color: #1a1200; border: none; border-radius: 8px;
+  padding: 9px 14px; font-weight: 700; cursor: pointer; font-size: 14px;
+}
+button.primary:disabled { opacity: .5; cursor: default; }
+button.buy { background: var(--up); color: #04210f; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 700; cursor: pointer; }
+button.sell { background: var(--down); color: #2a0710; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 700; cursor: pointer; }
+button.buy:disabled, button.sell:disabled { opacity: .45; cursor: default; }
+button.ghost { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+
+.muted { color: var(--muted); font-size: 13px; }
+.balance { font-weight: 800; color: var(--accent); }
+.up { color: var(--up); }
+.down { color: var(--down); }
+.mono { font-variant-numeric: tabular-nums; }
+
+/* 종목 카드 */
+.stock { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.stock .hd { display: flex; align-items: baseline; gap: 8px; }
+.stock .nm { font-weight: 700; font-size: 15px; }
+.stock .team { font-size: 11px; color: var(--muted); }
+.stock .px { font-size: 22px; font-weight: 800; margin: 6px 0 2px; font-variant-numeric: tabular-nums; }
+.stock .meta { font-size: 12px; color: var(--muted); }
+.stock .actions { display: flex; gap: 6px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+
+.pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.pill.open { color: var(--up); border-color: var(--up); }
+.pill.closed { color: var(--muted); }
+
+table.tbl { width: 100%; border-collapse: collapse; }
+table.tbl td, table.tbl th { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; font-size: 14px; }
+table.tbl td.num, table.tbl th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.banner { background: #3a2a00; border: 1px solid var(--accent); color: var(--accent); padding: 10px 14px; border-radius: 10px; margin-bottom: 12px; font-size: 13px; }
+.err { color: var(--down); font-size: 13px; }
+.ok { color: var(--up); font-size: 13px; }
+.news-item { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.news-item:last-child { border-bottom: none; }
+.news-item .when { color: var(--muted); font-size: 11px; }
+.recon { display: flex; gap: 16px; flex-wrap: wrap; }
+.recon .box { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; min-width: 120px; }
+.recon .box .k { font-size: 12px; color: var(--muted); }
+.recon .box .v { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }

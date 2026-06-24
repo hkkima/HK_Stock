@@ -1,0 +1,11 @@
+{
+  "name": "hk-stock-functions",
+  "description": "주식판 권위 거래/펀더멘탈 Cloud Functions (베팅판 포인트 공유 프로젝트)",
+  "type": "module",
+  "engines": { "node": "20" },
+  "main": "index.js",
+  "dependencies": {
+    "firebase-admin": "^12.6.0",
+    "firebase-functions": "^5.1.1"
+  }
+}

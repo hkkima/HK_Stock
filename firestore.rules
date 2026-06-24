@@ -1,0 +1,94 @@
+rules_version = '2';
+
+// ★★★ 베팅판 + 주식판 통합 보안 규칙 ★★★
+//   두 앱은 같은 Firebase 프로젝트(같은 Firestore)를 공유한다. 프로젝트당 규칙은 하나뿐이므로
+//   이 파일이 '권위 있는' 통합본이다. 배포 시 이 파일을 쓰면 베팅·주식 양쪽이 모두 동작한다.
+//   (HK_Betting/firestore.rules 와 동기화 필요. 이 파일이 그 상위 집합)
+//
+// 핵심 불변식: "포인트(users.balance)는 검증된 경로로만 증가한다(인플레 차단)".
+//   - 베팅: 참가자는 balance 감소만(베팅), 증가(정산)는 운영자만.
+//   - 주식: 모든 거래/배당/시세조정은 Cloud Functions(Admin SDK)가 실행 → 규칙을 우회한다.
+//           따라서 클라이언트는 stocks/holdings/ledger/meta(stockBoard) 를 '읽기만' 가능.
+//           balance 증가(매도·배당)는 오직 함수만 할 수 있다(클라이언트 직접 증가는 아래서 차단).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+
+    function isAdmin() {
+      return signedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email in [
+          'jetsomk22@gmail.com'
+          // 'another-admin@gmail.com'
+        ];
+    }
+
+    // ── 공유: 참가자 계정 (이름 + PIN, balance) ──────────────
+    match /users/{userId} {
+      allow read: if true;                  // 명단/리더보드 공개
+      allow delete: if isAdmin();
+      // 자체 가입: 본인이 만들되 시작 balance 는 반드시 0.
+      allow create: if isAdmin()
+        || (signedIn()
+            && request.resource.data.balance == 0
+            && request.resource.data.keys().hasOnly(['name', 'pinHash', 'balance']));
+      // 운영자는 자유롭게. 참가자(클라이언트)는 balance 만, '감소'만 허용(베팅용).
+      //   주식 매도/배당의 balance 증가는 Cloud Functions(Admin SDK)가 처리 → 규칙 우회.
+      allow update: if isAdmin()
+        || (signedIn()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['balance'])
+            && request.resource.data.balance is int
+            && request.resource.data.balance >= 0
+            && request.resource.data.balance < resource.data.balance);
+    }
+
+    // ── 베팅: meta(board 등) + markets + bets ───────────────
+    match /meta/{docId} {
+      // stockBoard 포함 모든 meta 는 공개 읽기. 쓰기는 운영자/함수만.
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /markets/{marketId} {
+      allow read: if true;
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (signedIn()
+            && resource.data.status == 'open'
+            && request.resource.data.status == 'open'
+            && request.resource.data.result == resource.data.result);
+
+      match /bets/{betUserId} {
+        allow read: if true;
+        allow create: if signedIn()
+          && request.resource.data.stake is int
+          && request.resource.data.stake > 0
+          && get(/databases/$(database)/documents/markets/$(marketId)).data.status == 'open'
+          && getAfter(/databases/$(database)/documents/users/$(betUserId)).data.balance
+             == get(/databases/$(database)/documents/users/$(betUserId)).data.balance - request.resource.data.stake;
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // ── 주식: 전부 읽기 전용. 쓰기는 Cloud Functions(Admin SDK)만 ─
+    //   (Admin SDK 는 규칙을 우회하므로 클라이언트 쓰기를 전면 차단해도 함수는 동작)
+    match /stocks/{stockId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /holdings/{holdingId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /trades/{tradeId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /ledger/{entryId} {
+      allow read: if true;
+      allow write: if false;
+    }
+  }
+}
