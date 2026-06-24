@@ -128,6 +128,7 @@ function DetailPanel({ stock }) {
     <div className="card detail">
       <div className="d-hd">
         <span className="d-nm">{stock.name}</span>
+        {stock.sector && <span className="co-tag">{stock.sector}</span>}
         {stock.team && <span className="d-team">{stock.team}</span>}
         <div className="spacer" />
         <span className={`pill ${open ? 'open' : 'closed'}`}>{open ? '거래중' : '마감'}</span>
@@ -168,7 +169,7 @@ function CompanyList({ stocks, selectedId, onSelect }) {
               <div className="logo" style={{ background: logoColor(s.id) }}>{(s.name || '?')[0]}</div>
               <div>
                 <div className="co-nm">{s.name}{s.status !== 'open' && <span className="co-tag">마감</span>}</div>
-                <div className="co-sub">{s.team || s.id}</div>
+                <div className="co-sub">{[s.sector, s.team].filter(Boolean).join(' · ') || s.id}</div>
               </div>
               <div className="co-px">
                 <div className="p mono">{(s.price || 0).toLocaleString()}</div>

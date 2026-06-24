@@ -96,11 +96,17 @@ export const trade = onCall(async (req) => {
 //   상장: 발행주식수(고정)·시작가(base)·변동성(slope) 지정. 시세는 이후 adjustPrice 로만.
 export const upsertStock = onCall(async (req) => {
   assertAdmin(req);
-  const { id, name, team, base, slope, totalShares, status } = req.data || {};
+  const { id, name, team, base, slope, totalShares, status, sector, traits } = req.data || {};
   const sid = String(id || '').trim();
   if (!sid) throw new HttpsError('invalid-argument', 'id가 필요합니다.');
   const ref = db.doc(`stocks/${sid}`);
   const snap = await ref.get();
+
+  // 특성(비공개·n개)은 운영자만 읽는 별도 컬렉션 stockTraits 에 저장.
+  if (Array.isArray(traits)) {
+    const clean = [...new Set(traits.map((t) => String(t).trim()).filter(Boolean))];
+    await db.doc(`stockTraits/${sid}`).set({ traits: clean }, { merge: false });
+  }
 
   if (!snap.exists) {
     const b = Math.floor(Number(base)); const sl = Math.floor(Number(slope)); const tot = Math.floor(Number(totalShares));
@@ -108,7 +114,7 @@ export const upsertStock = onCall(async (req) => {
       throw new HttpsError('invalid-argument', '신규 종목은 시작가·변동성·발행주식수(각 1 이상)가 필요합니다.');
     }
     await ref.set({
-      name: name || sid, team: team || '',
+      name: name || sid, team: team || '', sector: sector || '',
       base: b, slope: sl, totalShares: tot, circulating: 0, reserve: 0,
       price: b, prevClose: b, dayOpen: b,
       status: status || 'closed',
@@ -122,6 +128,7 @@ export const upsertStock = onCall(async (req) => {
   const patch = {};
   if (name != null) patch.name = name;
   if (team != null) patch.team = team;
+  if (sector != null) patch.sector = sector; // 업종(공개·1개)
   if (status != null) patch.status = status;
   if (slope != null) patch.slope = Math.max(1, Math.floor(Number(slope)));
   if (totalShares != null) {
@@ -253,6 +260,7 @@ export const delistStock = onCall(async (req) => {
 
     allHoldingRefs.forEach((r) => tx.delete(r));
     tx.delete(sRef);
+    tx.delete(db.doc(`stockTraits/${stockId}`));
     tx.set(db.collection('ledger').doc(), { stockId, type: 'delist', settlePrice: price, totalPayout, reserveReturned: reserve - totalPayout, count: holders.length, ts: FieldValue.serverTimestamp() });
     return { stockId, settlePrice: price, totalPayout, count: holders.length };
   });

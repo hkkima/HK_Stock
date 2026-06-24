@@ -31,6 +31,14 @@ export function subscribeUsers(cb) {
 export function subscribeStockBoard(cb) {
   return onSnapshot(stockBoardRef(), (snap) => cb(snap.exists() ? snap.data() : null));
 }
+// 종목 특성(비공개) — 운영자만 읽기 가능(규칙). 비운영자가 호출하면 권한 오류 → 호출 측에서 admin 일 때만.
+export function subscribeStockTraits(cb) {
+  return onSnapshot(
+    collection(getFirebase().db, 'stockTraits'),
+    (snap) => cb(Object.fromEntries(snap.docs.map((d) => [d.id, d.data().traits || []]))),
+    () => cb({}),
+  );
+}
 
 // ── 계정 (베팅판과 공유) ────────────────────────────────
 export async function getUser(userId) {

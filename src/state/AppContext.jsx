@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import { isConfigured, ensureAnonAuth, signInWithGoogle, isAdminEmail } from '../data/firebase.js';
 import {
-  subscribeStocks, subscribeHoldings, subscribeUsers, subscribeStockBoard,
+  subscribeStocks, subscribeHoldings, subscribeUsers, subscribeStockBoard, subscribeStockTraits,
   getUser, getUserByName, createUser,
 } from '../data/store.js';
 import { nameToUserId, verifyPin, hashPin } from '../auth/auth.js';
@@ -17,6 +17,7 @@ export function AppProvider({ children }) {
   const [holdings, setHoldings] = useState([]);
   const [users, setUsers] = useState([]);
   const [stockBoard, setStockBoard] = useState(null);
+  const [traitsByStock, setTraitsByStock] = useState({}); // 운영자만 채워짐
   const [session, setSession] = useState(() => {
     try { return JSON.parse(localStorage.getItem(SESSION_KEY)) || { role: 'guest' }; }
     catch { return { role: 'guest' }; }
@@ -32,6 +33,9 @@ export function AppProvider({ children }) {
       subscribeUsers(setUsers),
       subscribeStockBoard(setStockBoard),
     ];
+    // 특성(비공개)은 운영자만 구독 가능(규칙). 그 외엔 빈 맵 유지.
+    if (session.role === 'admin') unsubs.push(subscribeStockTraits(setTraitsByStock));
+    else setTraitsByStock({});
     return () => unsubs.forEach((u) => u && u());
   }, [configured, session.role]);
 
@@ -89,7 +93,7 @@ export function AppProvider({ children }) {
   );
 
   const value = {
-    configured, stocks, holdings, users, stockBoard,
+    configured, stocks, holdings, users, stockBoard, traitsByStock,
     session, myUser, myHoldings, priceOf,
     loginParticipant, registerParticipant, loginAdmin, logout,
   };

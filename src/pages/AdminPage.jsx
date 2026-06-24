@@ -19,8 +19,12 @@ function StatusMsg({ msg }) {
   return <p className={msg.ok ? 'ok' : 'err'} style={{ marginBottom: 0 }}>{msg.text}</p>;
 }
 
+function parseTraits(s) {
+  return String(s || '').split(',').map((t) => t.trim()).filter(Boolean);
+}
+
 function NewStock() {
-  const [f, setF] = useState({ id: '', name: '', team: '', base: 1000, slope: 5, totalShares: 1000 });
+  const [f, setF] = useState({ id: '', name: '', team: '', base: 1000, slope: 5, totalShares: 1000, sector: '', traits: '' });
   const { busy, msg, run } = useAction();
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   return (
@@ -35,17 +39,22 @@ function NewStock() {
         <label className="muted">시작가<input type="number" style={{ width: 90, marginLeft: 4 }} value={f.base} onChange={set('base')} /></label>
         <label className="muted">발행주식수<input type="number" style={{ width: 90, marginLeft: 4 }} value={f.totalShares} onChange={set('totalShares')} /></label>
         <label className="muted">변동성(주당)<input type="number" style={{ width: 70, marginLeft: 4 }} value={f.slope} onChange={set('slope')} /></label>
+      </div>
+      <div className="row" style={{ marginTop: 8 }}>
+        <input placeholder="업종 (공개·1개, 예: 게임)" value={f.sector} onChange={set('sector')} />
+        <input placeholder="특성 (비공개·쉼표로 n개, 예: AI,적자,루키)" style={{ flex: 1, minWidth: 220 }} value={f.traits} onChange={set('traits')} />
         <button
           className="primary" disabled={busy}
           onClick={() => run(
-            () => upsertStock({ id: f.id, name: f.name, team: f.team, base: Number(f.base), slope: Number(f.slope), totalShares: Number(f.totalShares), status: 'closed' }),
+            () => upsertStock({ id: f.id, name: f.name, team: f.team, base: Number(f.base), slope: Number(f.slope), totalShares: Number(f.totalShares), sector: f.sector, traits: parseTraits(f.traits), status: 'closed' }),
             (r) => `상장 완료: ${r.id}`,
           )}
         >상장</button>
       </div>
       <p className="muted">
         발행주식수는 고정(무한발행 없음). <b>변동성</b>=1주 거래마다 시세가 움직이는 폭(클수록 출렁임 큼).
-        예: 시작가 1000·변동성 5면 100주 매수 시 시세 약 1500. 시작가엔 펀더멘탈 반영. 시세 변경은 ③ 시세조정으로만.
+        예: 시작가 1000·변동성 5면 100주 매수 시 시세 약 1500. 시세 변경은 ③ 시세조정으로만.
+        <b>업종</b>은 공개(학생도 봄), <b>특성</b>은 비공개(운영자만·뉴스 타겟용)라 학생 화면엔 안 보입니다.
       </p>
       <StatusMsg msg={msg} />
     </div>
@@ -53,11 +62,24 @@ function NewStock() {
 }
 
 function StockList() {
-  const { stocks } = useApp();
+  const { stocks, traitsByStock } = useApp();
   const { busy, msg, run } = useAction();
-  const [edit, setEdit] = useState({}); // { [id]: { slope, totalShares } }
-  const ev = (s, k) => (edit[s.id]?.[k] ?? (k === 'slope' ? s.slope : s.totalShares));
+  const [edit, setEdit] = useState({}); // { [id]: { slope, totalShares, sector, traits } }
+  const dflt = (s, k) => {
+    if (k === 'slope') return s.slope;
+    if (k === 'totalShares') return s.totalShares;
+    if (k === 'sector') return s.sector || '';
+    return (traitsByStock[s.id] || []).join(', '); // traits
+  };
+  const ev = (s, k) => (edit[s.id]?.[k] ?? dflt(s, k));
   const setEv = (s, k) => (e) => setEdit({ ...edit, [s.id]: { ...edit[s.id], [k]: e.target.value } });
+  const saveRow = (s) => upsertStock({
+    id: s.id,
+    slope: Number(ev(s, 'slope')),
+    totalShares: Number(ev(s, 'totalShares')),
+    sector: ev(s, 'sector'),
+    traits: parseTraits(ev(s, 'traits')),
+  });
 
   function delist(s) {
     const def = String(s.price || 0);
@@ -77,7 +99,7 @@ function StockList() {
       <h3>상장 종목</h3>
       {stocks.length === 0 ? <p className="muted">없음</p> : (
         <table className="tbl">
-          <thead><tr><th>종목</th><th className="num">시세</th><th className="num">발행</th><th className="num">유통</th><th>변동성</th><th>거래</th><th>관리</th></tr></thead>
+          <thead><tr><th>종목</th><th className="num">시세</th><th className="num">발행</th><th className="num">유통</th><th>변동성</th><th>업종(공개)</th><th>특성(비공개)</th><th>거래</th><th>관리</th></tr></thead>
           <tbody>
             {stocks.map((s) => (
               <tr key={s.id}>
@@ -89,8 +111,12 @@ function StockList() {
                 <td className="num mono">{(s.circulating || 0).toLocaleString()}</td>
                 <td>
                   <input type="number" style={{ width: 56 }} value={ev(s, 'slope')} onChange={setEv(s, 'slope')} />
+                </td>
+                <td><input style={{ width: 80 }} value={ev(s, 'sector')} onChange={setEv(s, 'sector')} placeholder="게임" /></td>
+                <td>
+                  <input style={{ width: 130 }} value={ev(s, 'traits')} onChange={setEv(s, 'traits')} placeholder="AI,적자" />
                   <button className="ghost" disabled={busy} style={{ marginLeft: 4 }}
-                    onClick={() => run(() => upsertStock({ id: s.id, slope: Number(ev(s, 'slope')), totalShares: Number(ev(s, 'totalShares')) }), () => '저장')}>저장</button>
+                    onClick={() => run(() => saveRow(s), () => '저장')}>저장</button>
                 </td>
                 <td>
                   <button className={s.status === 'open' ? 'sell' : 'buy'} disabled={busy}
