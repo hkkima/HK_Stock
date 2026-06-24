@@ -1,81 +1,92 @@
 import { describe, it, expect } from 'vitest';
 import {
-  priceImpact, quoteBuy, quoteSell, quoteLadder, nextAvgCost, holdingValue,
-  netWorth, priceAdjustDelta, MIN_PRICE,
+  marginalPrice, rangeSum, quoteBuy, quoteSell, quoteLadder, nextAvgCost,
+  holdingValue, netWorth, priceAdjustDelta,
 } from '../domain/market.js';
 
-const stock = (price, liq) => ({ price, liq });
+// base=1000, slope=2, 발행 1000주, 유통 c
+const stock = (circulating, totalShares = 1000) => ({ base: 1000, slope: 2, totalShares, circulating });
 
-describe('priceImpact', () => {
-  it('거래량/유동성에 비례', () => {
-    expect(priceImpact(100, 10, 100)).toBe(10); // 100*10/100
-    expect(priceImpact(100, 1, 100)).toBe(1);
+describe('marginalPrice', () => {
+  it('base + slope×유통', () => {
+    expect(marginalPrice(stock(0))).toBe(1000);
+    expect(marginalPrice(stock(50))).toBe(1100); // 1000 + 2×50
   });
-  it('liq가 크면 둔감', () => {
-    expect(priceImpact(100, 10, 1000)).toBe(1);
+});
+
+describe('rangeSum (정수)', () => {
+  it('곡선 적분이 항상 정수', () => {
+    // Σ_{i=0}^{2} (1000+2i) = 1000+1002+1004 = 3006
+    expect(rangeSum(1000, 2, 0, 2)).toBe(3006);
+    expect(Number.isInteger(rangeSum(1000, 3, 0, 4))).toBe(true);
+    expect(Number.isInteger(rangeSum(999, 7, 5, 11))).toBe(true);
   });
 });
 
 describe('quoteBuy', () => {
-  it('현재가로 체결, 시세 상승', () => {
-    const q = quoteBuy(stock(100, 50), 5);
-    expect(q.cost).toBe(500);
-    expect(q.price).toBe(100);
-    expect(q.newPrice).toBe(100 + Math.round((100 * 5) / 50)); // +10 → 110
-    expect(q.newPrice).toBe(110);
+  it('곡선 적분으로 체결, 유통·시세 증가', () => {
+    const q = quoteBuy(stock(0), 3);
+    expect(q.cost).toBe(3006); // 1000+1002+1004
+    expect(q.newCirculating).toBe(3);
+    expect(q.newPrice).toBe(1006);
   });
-  it('수량 0/음수/소수는 거부', () => {
-    expect(() => quoteBuy(stock(100, 50), 0)).toThrow();
-    expect(() => quoteBuy(stock(100, 50), -3)).toThrow();
+  it('발행주식수 초과 매수는 거부', () => {
+    expect(() => quoteBuy(stock(999), 2)).toThrow(); // 999+2 > 1000
+    expect(() => quoteBuy(stock(1000), 1)).toThrow();
   });
 });
 
 describe('quoteSell', () => {
-  it('현재가로 체결, 시세 하락', () => {
-    const q = quoteSell(stock(100, 50), 5);
-    expect(q.proceeds).toBe(500);
-    expect(q.newPrice).toBe(90);
+  it('같은 구간 적분으로 체결', () => {
+    const q = quoteSell(stock(3), 3);
+    expect(q.proceeds).toBe(3006);
+    expect(q.newCirculating).toBe(0);
+    expect(q.newPrice).toBe(1000);
   });
-  it('시세는 MIN_PRICE 아래로 안 내려감', () => {
-    const q = quoteSell(stock(2, 1), 100); // 충격 거대
-    expect(q.newPrice).toBe(MIN_PRICE);
+  it('유통 초과 매도는 거부', () => {
+    expect(() => quoteSell(stock(2), 5)).toThrow();
+  });
+});
+
+describe('★ 사고 곧바로 팔면 본전 (포인트 복사 차단)', () => {
+  it('어떤 유통/수량에서도 매수비용 == 직후 매도수령', () => {
+    for (const c of [0, 1, 7, 50, 500]) {
+      for (const q of [1, 3, 10]) {
+        if (c + q > 1000) continue;
+        const buy = quoteBuy(stock(c), q);
+        const afterBuy = stock(c + q);
+        const sell = quoteSell(afterBuy, q);
+        expect(sell.proceeds).toBe(buy.cost); // 차익 0
+      }
+    }
   });
 });
 
 describe('quoteLadder', () => {
-  it('수량별 매수/매도 체결가·시세이동', () => {
-    const rows = quoteLadder(stock(100, 50), [1, 5]);
-    expect(rows[0]).toMatchObject({ qty: 1, buyCost: 100, buyTo: 102, sellGet: 100, sellTo: 98 });
-    expect(rows[1]).toMatchObject({ qty: 5, buyCost: 500, buyTo: 110, sellGet: 500, sellTo: 90 });
+  it('수량별 매수/매도, 불가 수량 제외', () => {
+    const rows = quoteLadder(stock(0), [1, 5]);
+    expect(rows[0]).toMatchObject({ qty: 1, buy: { cost: 1000, to: 1002 }, sell: null });
+    expect(rows[1].buy.cost).toBe(rangeSum(1000, 2, 0, 4));
   });
 });
 
 describe('nextAvgCost', () => {
-  it('첫 매수 평단 = 체결가', () => {
-    expect(nextAvgCost(0, 0, 10, 100)).toBe(100);
-  });
-  it('가중평균', () => {
-    // 10주 @100 보유 후 10주 @200 매수 → 평단 150
-    expect(nextAvgCost(10, 100, 10, 200)).toBe(150);
+  it('첫 매수 평단 = 체결 평균가', () => {
+    expect(nextAvgCost(0, 0, 3, 1002)).toBe(1002);
   });
 });
 
 describe('netWorth', () => {
   it('현금 + 보유 평가액', () => {
-    const holdings = [{ stockId: 'a', shares: 3 }, { stockId: 'b', shares: 2 }];
-    const priceOf = (id) => ({ a: 100, b: 50 }[id]);
-    expect(holdingValue(3, 100)).toBe(300);
-    expect(netWorth(1000, holdings, priceOf)).toBe(1000 + 300 + 100); // 1400
-  });
-  it('가격 없는 종목은 0으로', () => {
-    expect(netWorth(500, [{ stockId: 'x', shares: 9 }], () => undefined)).toBe(500);
+    const holdings = [{ stockId: 'a', shares: 3 }];
+    expect(holdingValue(3, 1100)).toBe(3300);
+    expect(netWorth(1000, holdings, () => 1100)).toBe(4300);
   });
 });
 
 describe('priceAdjustDelta (총량 보존)', () => {
-  it('상향=하우스→리저브(양수), 하향=리저브→하우스(음수)', () => {
-    expect(priceAdjustDelta(100, 120, 50)).toBe(1000);  // +20 × 50주
-    expect(priceAdjustDelta(100, 80, 50)).toBe(-1000);
-    expect(priceAdjustDelta(100, 100, 50)).toBe(0);
+  it('(새가−현재가)×유통', () => {
+    expect(priceAdjustDelta(1000, 1200, 50)).toBe(10000);
+    expect(priceAdjustDelta(1200, 1000, 50)).toBe(-10000);
   });
 });

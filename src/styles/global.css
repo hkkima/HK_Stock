@@ -5,8 +5,9 @@
   --ink: #e8eaf0;
   --muted: #9aa3b5;
   --accent: #f5b301;
-  --up: #36c275;
-  --down: #e2566f;
+  --up: #e35d6a;    /* 상승 = 빨강 (한국 증시 관례) */
+  --down: #4d90e0;  /* 하락 = 파랑 */
+  --open: #36c275;  /* 장 열림 표시 */
   --line: #2c3142;
 }
 * { box-sizing: border-box; }
@@ -48,8 +49,8 @@ button.primary {
   padding: 9px 14px; font-weight: 700; cursor: pointer; font-size: 14px;
 }
 button.primary:disabled { opacity: .5; cursor: default; }
-button.buy { background: var(--up); color: #04210f; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 700; cursor: pointer; }
-button.sell { background: var(--down); color: #2a0710; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 700; cursor: pointer; }
+button.buy { background: var(--up); color: #fff0f1; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 700; cursor: pointer; }
+button.sell { background: var(--down); color: #eef5ff; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 700; cursor: pointer; }
 button.buy:disabled, button.sell:disabled { opacity: .45; cursor: default; }
 button.ghost { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
 button.ghost.danger { border-color: var(--down); color: var(--down); }
@@ -76,8 +77,43 @@ button.ghost.danger:disabled { opacity: .45; cursor: default; border-color: var(
 table.ladder { margin-top: 6px; }
 table.ladder td, table.ladder th { padding: 4px 4px; font-size: 12px; }
 
+/* ── 시세 화면: 큰 차트 + 우측 종목 리스트 ── */
+.market-layout { display: grid; grid-template-columns: 1fr 320px; gap: 12px; align-items: start; }
+@media (max-width: 760px) { .market-layout { grid-template-columns: 1fr; } }
+
+.detail .d-hd { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.detail .d-nm { font-size: 20px; font-weight: 800; }
+.detail .d-team { font-size: 12px; color: var(--muted); }
+.detail .d-px { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; margin: 6px 0 2px; }
+.chg { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.chg.up { color: var(--up); }
+.chg.down { color: var(--down); }
+.chg-pill { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 6px; font-variant-numeric: tabular-nums; }
+.chg-pill.up { color: var(--up); background: rgba(227,93,106,.14); }
+.chg-pill.down { color: var(--down); background: rgba(77,144,224,.14); }
+
+.bigchart { display: block; background: var(--panel2); border-radius: 10px; margin: 10px 0; }
+.bigchart-empty { height: 200px; display: flex; align-items: center; justify-content: center; background: var(--panel2); border-radius: 10px; margin: 10px 0; font-size: 13px; }
+.caxis { fill: var(--muted); font-size: 11px; }
+
+.stat-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+.stat-row .s { font-size: 12px; }
+.stat-row .s .k { color: var(--muted); }
+.stat-row .s .v { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.co-list { display: flex; flex-direction: column; gap: 0; max-height: 560px; overflow: auto; }
+.co { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid transparent; border-bottom: 1px solid var(--line); cursor: pointer; }
+.co:hover { background: var(--panel2); }
+.co.sel { background: var(--panel2); border-color: var(--accent); border-radius: 8px; }
+.co .logo { width: 30px; height: 30px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-weight: 800; color: #10131a; flex: 0 0 auto; }
+.co .co-nm { font-weight: 700; font-size: 14px; }
+.co .co-sub { font-size: 11px; color: var(--muted); }
+.co .co-px { margin-left: auto; text-align: right; }
+.co .co-px .p { font-weight: 700; font-variant-numeric: tabular-nums; font-size: 14px; }
+.co .co-tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); margin-left: 6px; }
+
 .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
-.pill.open { color: var(--up); border-color: var(--up); }
+.pill.open { color: var(--open); border-color: var(--open); }
 .pill.closed { color: var(--muted); }
 
 table.tbl { width: 100%; border-collapse: collapse; }

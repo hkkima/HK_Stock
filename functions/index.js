@@ -1,31 +1,27 @@
 // ─────────────────────────────────────────────────────────────
-// 주식판 권위(authoritative) Cloud Functions.
-//   모든 포인트·시세·보유 변동은 여기서만 일어난다(Admin SDK → 규칙 우회).
-//   클라이언트는 읽기만 가능하고, 거래/배당/시세조정은 전부 이 함수를 호출.
-//   → 베팅판의 "포인트는 검증된 경로로만 증가" 불변식을 그대로 유지.
-//
-//   배포: 베팅판과 '같은' Firebase 프로젝트에 deploy.
-//     firebase deploy --only functions,firestore:rules
+// 주식판 권위(authoritative) Cloud Functions — 고정발행 본드커브 모델.
+//   모든 포인트·시세·보유 변동은 여기서만(Admin SDK → 규칙 우회). 클라는 읽기만.
+//   배포: firebase deploy --only functions,firestore:rules  (베팅과 같은 프로젝트)
 // ─────────────────────────────────────────────────────────────
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { quoteBuy, quoteSell, nextAvgCost, priceAdjustDelta } from './market.js';
 
-// ★ 프론트 VITE_FUNCTIONS_REGION 과 일치시킬 것 (서울 리전) ★
+// ★ 프론트 VITE_FUNCTIONS_REGION 과 일치(서울 리전) ★
 setGlobalOptions({ region: 'asia-northeast3' });
 
 initializeApp();
 const db = getFirestore();
 
-// 운영자 이메일 — ★ 프론트 VITE_ADMIN_EMAILS 및 firestore.rules 와 일치시킬 것 ★
+// 운영자 이메일 — ★ 프론트 VITE_ADMIN_EMAILS 및 firestore.rules 와 일치 ★
 const ADMIN_EMAILS = ['jetsomk22@gmail.com'];
 
 const boardRef = () => db.doc('meta/stockBoard');
 const holdingId = (userId, stockId) => `${userId}__${stockId}`;
 
-// 시세 그래프용 가격 히스토리 — 최근 60틱만 보관(배열 비대화 방지).
 const HIST_CAP = 60;
 function appendHist(hist, p) {
   const arr = Array.isArray(hist) ? hist : [];
@@ -42,7 +38,7 @@ function assertAdmin(req) {
   }
 }
 
-// ── 참가자: 매수/매도 (권위 체결) ──────────────────────────
+// ── 참가자: 매수/매도 (본드커브 권위 체결) ─────────────────
 export const trade = onCall(async (req) => {
   assertAuth(req);
   const { userId, pinHash, stockId, side, qty } = req.data || {};
@@ -58,92 +54,86 @@ export const trade = onCall(async (req) => {
     const [uSnap, sSnap, hSnap] = await Promise.all([tx.get(uRef), tx.get(sRef), tx.get(hRef)]);
     if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
     const user = uSnap.data();
-    // 경량 신원 확인: pinHash 일치 요구(있을 때).
-    if (user.pinHash && pinHash !== user.pinHash) {
-      throw new HttpsError('permission-denied', 'PIN이 일치하지 않습니다.');
-    }
+    if (user.pinHash && pinHash !== user.pinHash) throw new HttpsError('permission-denied', 'PIN이 일치하지 않습니다.');
     if (!sSnap.exists) throw new HttpsError('not-found', '종목을 찾을 수 없습니다.');
-    const stock = sSnap.data();
+    const stock = { ...sSnap.data(), circulating: sSnap.data().circulating || 0, reserve: sSnap.data().reserve || 0 };
     if (stock.status !== 'open') throw new HttpsError('failed-precondition', '거래가 닫힌 종목입니다.');
     const holding = hSnap.exists ? hSnap.data() : { shares: 0, avgCost: 0 };
     const balance = user.balance || 0;
 
-    let cashDelta; let newShares; let newAvg; let fillPrice; let newPrice;
+    let cashDelta; let newShares; let newAvg; let fillPrice; let Q;
     if (side === 'buy') {
-      const Q = quoteBuy(stock, q);
+      try { Q = quoteBuy(stock, q); } catch (e) { throw new HttpsError('failed-precondition', e.message); }
       if (Q.cost > balance) throw new HttpsError('failed-precondition', '잔액이 부족합니다.');
       cashDelta = -Q.cost;
+      fillPrice = Math.round(Q.cost / q);
       newShares = (holding.shares || 0) + q;
-      newAvg = nextAvgCost(holding.shares || 0, holding.avgCost || 0, q, Q.price);
-      fillPrice = Q.price; newPrice = Q.newPrice;
-      tx.update(sRef, {
-        price: newPrice,
-        reserve: (stock.reserve || 0) + Q.cost,
-        sharesOut: (stock.sharesOut || 0) + q,
-        priceHistory: appendHist(stock.priceHistory, newPrice),
-      });
+      newAvg = nextAvgCost(holding.shares || 0, holding.avgCost || 0, q, Q.cost / q);
     } else {
       if ((holding.shares || 0) < q) throw new HttpsError('failed-precondition', '보유 수량이 부족합니다.');
-      const Q = quoteSell(stock, q);
+      try { Q = quoteSell(stock, q); } catch (e) { throw new HttpsError('failed-precondition', e.message); }
       cashDelta = Q.proceeds;
+      fillPrice = Math.round(Q.proceeds / q);
       newShares = (holding.shares || 0) - q;
-      newAvg = holding.avgCost || 0; // 매도는 평단 불변
-      fillPrice = Q.price; newPrice = Q.newPrice;
-      tx.update(sRef, {
-        price: newPrice,
-        reserve: (stock.reserve || 0) - Q.proceeds,
-        sharesOut: (stock.sharesOut || 0) - q,
-        priceHistory: appendHist(stock.priceHistory, newPrice),
-      });
+      newAvg = holding.avgCost || 0;
     }
 
+    tx.update(sRef, {
+      circulating: Q.newCirculating,
+      reserve: stock.reserve + (side === 'buy' ? Q.cost : -Q.proceeds),
+      price: Q.newPrice,
+      priceHistory: appendHist(stock.priceHistory, Q.newPrice),
+    });
     tx.update(uRef, { balance: balance + cashDelta });
-    tx.set(hRef, {
-      userId, stockId, shares: newShares, avgCost: newAvg,
-      updatedAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
-    tx.set(db.collection('trades').doc(), {
-      userId, stockId, side, qty: q, price: fillPrice, cash: cashDelta,
-      ts: FieldValue.serverTimestamp(),
-    });
-    tx.set(db.collection('ledger').doc(), {
-      userId, stockId, type: side, delta: cashDelta, qty: q, price: fillPrice,
-      ts: FieldValue.serverTimestamp(),
-    });
-    return { side, qty: q, price: fillPrice, cash: cashDelta, newBalance: balance + cashDelta, newPrice };
+    tx.set(hRef, { userId, stockId, shares: newShares, avgCost: newAvg, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    tx.set(db.collection('trades').doc(), { userId, stockId, side, qty: q, price: fillPrice, cash: cashDelta, ts: FieldValue.serverTimestamp() });
+    tx.set(db.collection('ledger').doc(), { userId, stockId, type: side, delta: cashDelta, qty: q, price: fillPrice, ts: FieldValue.serverTimestamp() });
+    return { side, qty: q, price: fillPrice, cash: cashDelta, newBalance: balance + cashDelta, newPrice: Q.newPrice };
   });
 });
 
-// ── 운영자: 종목 생성/수정(잔액 비관여) ────────────────────
-//   시세(price)는 신규 생성 시에만 설정. 이후 변경은 adjustPrice 로만(총량 보존).
+// ── 운영자: 종목 상장/수정 ──────────────────────────────────
+//   상장: 발행주식수(고정)·시작가(base)·변동성(slope) 지정. 시세는 이후 adjustPrice 로만.
 export const upsertStock = onCall(async (req) => {
   assertAdmin(req);
-  const { id, name, team, price, liq, status } = req.data || {};
+  const { id, name, team, base, slope, totalShares, status } = req.data || {};
   const sid = String(id || '').trim();
   if (!sid) throw new HttpsError('invalid-argument', 'id가 필요합니다.');
   const ref = db.doc(`stocks/${sid}`);
   const snap = await ref.get();
+
   if (!snap.exists) {
-    const p = Math.floor(Number(price)); const L = Math.floor(Number(liq));
-    if (!(p >= 1) || !(L >= 1)) throw new HttpsError('invalid-argument', '신규 종목은 시작가/유동성(1+)이 필요합니다.');
+    const b = Math.floor(Number(base)); const sl = Math.floor(Number(slope)); const tot = Math.floor(Number(totalShares));
+    if (!(b >= 1) || !(sl >= 1) || !(tot >= 1)) {
+      throw new HttpsError('invalid-argument', '신규 종목은 시작가·변동성·발행주식수(각 1 이상)가 필요합니다.');
+    }
     await ref.set({
-      name: name || sid, team: team || '', price: p, liq: L,
-      reserve: 0, sharesOut: 0, status: status || 'closed',
-      priceHistory: [{ p, t: Date.now() }],
+      name: name || sid, team: team || '',
+      base: b, slope: sl, totalShares: tot, circulating: 0, reserve: 0,
+      price: b, prevClose: b, dayOpen: b,
+      status: status || 'closed',
+      priceHistory: [{ p: b, t: Date.now() }],
       createdAt: FieldValue.serverTimestamp(),
     });
     return { id: sid, created: true };
   }
+
+  const cur = snap.data();
   const patch = {};
   if (name != null) patch.name = name;
   if (team != null) patch.team = team;
-  if (liq != null) patch.liq = Math.max(1, Math.floor(Number(liq)));
   if (status != null) patch.status = status;
+  if (slope != null) patch.slope = Math.max(1, Math.floor(Number(slope)));
+  if (totalShares != null) {
+    const tot = Math.floor(Number(totalShares));
+    if (tot < (cur.circulating || 0)) throw new HttpsError('failed-precondition', '발행주식수는 유통주식수보다 작을 수 없습니다.');
+    patch.totalShares = tot;
+  }
   await ref.set(patch, { merge: true });
   return { id: sid, updated: true };
 });
 
-// ── 운영자: 배당 (하우스 풀 → 보유자, perShare × 보유주) ────
+// ── 운영자: 배당 (하우스 풀 → 보유자) ──────────────────────
 export const payDividend = onCall(async (req) => {
   assertAdmin(req);
   const { stockId, perShare } = req.data || {};
@@ -151,12 +141,8 @@ export const payDividend = onCall(async (req) => {
   if (!stockId || !(ps > 0)) throw new HttpsError('invalid-argument', 'stockId/perShare(1+) 필요.');
 
   const hs = await db.collection('holdings').where('stockId', '==', stockId).get();
-  const payouts = [];
-  let total = 0;
-  hs.forEach((d) => {
-    const h = d.data();
-    if ((h.shares || 0) > 0) { const amt = ps * h.shares; total += amt; payouts.push({ userId: h.userId, amt }); }
-  });
+  const payouts = []; let total = 0;
+  hs.forEach((d) => { const h = d.data(); if ((h.shares || 0) > 0) { const amt = ps * h.shares; total += amt; payouts.push({ userId: h.userId, amt }); } });
   if (payouts.length === 0) throw new HttpsError('failed-precondition', '보유자가 없습니다.');
 
   await db.runTransaction(async (tx) => {
@@ -165,20 +151,14 @@ export const payDividend = onCall(async (req) => {
     if (total > house) throw new HttpsError('failed-precondition', `하우스 풀 부족(필요 ${total}, 보유 ${house}). 먼저 발행하세요.`);
     const uRefs = payouts.map((p) => db.doc(`users/${p.userId}`));
     const uSnaps = await Promise.all(uRefs.map((r) => tx.get(r)));
-    uSnaps.forEach((s, i) => {
-      if (s.exists) tx.update(uRefs[i], { balance: (s.data().balance || 0) + payouts[i].amt });
-    });
+    uSnaps.forEach((s, i) => { if (s.exists) tx.update(uRefs[i], { balance: (s.data().balance || 0) + payouts[i].amt }); });
     tx.set(boardRef(), { housePool: house - total }, { merge: true });
-    tx.set(db.collection('ledger').doc(), {
-      stockId, type: 'dividend', perShare: ps, total, count: payouts.length,
-      ts: FieldValue.serverTimestamp(),
-    });
+    tx.set(db.collection('ledger').doc(), { stockId, type: 'dividend', perShare: ps, total, count: payouts.length, ts: FieldValue.serverTimestamp() });
   });
   return { stockId, perShare: ps, total, count: payouts.length };
 });
 
-// ── 운영자: 펀더멘탈 시세 조정 (하우스 풀 ↔ 리저브, 총량 보존) ─
-//   상향=하우스→리저브(인플레), 하향=리저브→하우스(디플레, '소프트 패널티').
+// ── 운영자: 펀더멘탈 시세 조정(곡선 평행이동, 총량 보존) ────
 export const adjustPrice = onCall(async (req) => {
   assertAdmin(req);
   const { stockId, newPrice, memo } = req.data || {};
@@ -190,24 +170,21 @@ export const adjustPrice = onCall(async (req) => {
     const [sSnap, bSnap] = await Promise.all([tx.get(sRef), tx.get(boardRef())]);
     if (!sSnap.exists) throw new HttpsError('not-found', '종목을 찾을 수 없습니다.');
     const s = sSnap.data();
-    const delta = priceAdjustDelta(s.price, np, s.sharesOut || 0);
+    const circ = s.circulating || 0;
+    const curPrice = s.base + s.slope * circ;
+    const newBase = s.base + (np - curPrice);
+    if (newBase < 1) throw new HttpsError('failed-precondition', '시세를 그만큼 낮추면 곡선이 음수가 됩니다.');
+    const delta = priceAdjustDelta(curPrice, np, circ);
     const house = bSnap.exists ? (bSnap.data().housePool || 0) : 0;
     if (delta > house) throw new HttpsError('failed-precondition', `상향 보조에 하우스 풀 부족(필요 ${delta}, 보유 ${house}).`);
-    tx.update(sRef, {
-      price: np,
-      reserve: (s.reserve || 0) + delta,
-      priceHistory: appendHist(s.priceHistory, np),
-    });
+    tx.update(sRef, { base: newBase, price: np, reserve: (s.reserve || 0) + delta, priceHistory: appendHist(s.priceHistory, np) });
     tx.set(boardRef(), { housePool: house - delta }, { merge: true });
-    tx.set(db.collection('ledger').doc(), {
-      stockId, type: 'price_adjust', oldPrice: s.price, newPrice: np, delta, memo: memo || '',
-      ts: FieldValue.serverTimestamp(),
-    });
-    return { stockId, oldPrice: s.price, newPrice: np, delta };
+    tx.set(db.collection('ledger').doc(), { stockId, type: 'price_adjust', oldPrice: curPrice, newPrice: np, delta, memo: memo || '', ts: FieldValue.serverTimestamp() });
+    return { stockId, oldPrice: curPrice, newPrice: np, delta };
   });
 });
 
-// ── 운영자: 뉴스 피드(재미 요소). 시세 효과가 필요하면 adjustPrice 별도 호출 ─
+// ── 운영자: 뉴스 피드 ───────────────────────────────────────
 export const postNews = onCall(async (req) => {
   assertAdmin(req);
   const { text, stockId } = req.data || {};
@@ -221,7 +198,7 @@ export const postNews = onCall(async (req) => {
   return { ok: true };
 });
 
-// ── 운영자: 하우스 풀 발행/소각 (유일한 총량 변동 경로) ─────
+// ── 운영자: 하우스 풀 발행/소각 (유일한 총량 변동) ─────────
 export const mintToHouse = onCall(async (req) => {
   assertAdmin(req);
   const { amount, memo } = req.data || {};
@@ -232,17 +209,12 @@ export const mintToHouse = onCall(async (req) => {
     const house = bSnap.exists ? (bSnap.data().housePool || 0) : 0;
     if (house + amt < 0) throw new HttpsError('failed-precondition', '하우스 풀이 음수가 됩니다.');
     tx.set(boardRef(), { housePool: house + amt }, { merge: true });
-    tx.set(db.collection('ledger').doc(), {
-      type: amt >= 0 ? 'mint' : 'burn', delta: amt, memo: memo || '',
-      ts: FieldValue.serverTimestamp(),
-    });
+    tx.set(db.collection('ledger').doc(), { type: amt >= 0 ? 'mint' : 'burn', delta: amt, memo: memo || '', ts: FieldValue.serverTimestamp() });
   });
   return { ok: true, amount: amt };
 });
 
 // ── 운영자: 상장폐지(회사 삭제) ─────────────────────────────
-//   보유자에게 settlePrice × 보유주 지급(미지정 시 현재가=졸업 매수, 0=부도).
-//   리저브 제거분과 지급분 차액은 하우스 풀이 흡수/보전 → 총량 보존. 거래는 먼저 닫아야 함.
 export const delistStock = onCall(async (req) => {
   assertAdmin(req);
   const { stockId, settlePrice } = req.data || {};
@@ -261,7 +233,7 @@ export const delistStock = onCall(async (req) => {
     if (!sSnap.exists) throw new HttpsError('not-found', '종목을 찾을 수 없습니다.');
     const s = sSnap.data();
     if (s.status === 'open') throw new HttpsError('failed-precondition', '거래를 먼저 닫은 뒤 상장폐지하세요.');
-    const price = sp == null ? (s.price || 0) : sp; // 기본 = 현재가(졸업 매수)
+    const price = sp == null ? (s.price || 0) : sp;
     const reserve = s.reserve || 0;
 
     const uRefs = holders.map((h) => db.doc(`users/${h.userId}`));
@@ -276,19 +248,31 @@ export const delistStock = onCall(async (req) => {
 
     const house = bSnap.exists ? (bSnap.data().housePool || 0) : 0;
     const newHouse = house + (reserve - totalPayout);
-    if (newHouse < 0) {
-      throw new HttpsError('failed-precondition',
-        `상폐 정산에 하우스 풀 부족(부족분 ${-newHouse}). 먼저 발행하거나 정산가를 낮추세요.`);
-    }
+    if (newHouse < 0) throw new HttpsError('failed-precondition', `상폐 정산에 하우스 풀 부족(부족분 ${-newHouse}). 먼저 발행하거나 정산가를 낮추세요.`);
     tx.set(boardRef(), { housePool: newHouse }, { merge: true });
 
     allHoldingRefs.forEach((r) => tx.delete(r));
     tx.delete(sRef);
-    tx.set(db.collection('ledger').doc(), {
-      stockId, type: 'delist', settlePrice: price, totalPayout,
-      reserveReturned: reserve - totalPayout, count: holders.length,
-      ts: FieldValue.serverTimestamp(),
-    });
+    tx.set(db.collection('ledger').doc(), { stockId, type: 'delist', settlePrice: price, totalPayout, reserveReturned: reserve - totalPayout, count: holders.length, ts: FieldValue.serverTimestamp() });
     return { stockId, settlePrice: price, totalPayout, count: holders.length };
   });
+});
+
+// ── 자동 장운영: 매일 09:00 개장, 18:00 마감 (Asia/Seoul) ───
+async function setAllStocks(patchFromStock) {
+  const snap = await db.collection('stocks').get();
+  if (snap.empty) return 0;
+  const batch = db.batch();
+  snap.forEach((d) => batch.update(d.ref, patchFromStock(d.data())));
+  await batch.commit();
+  return snap.size;
+}
+
+export const openMarket = onSchedule({ schedule: '0 9 * * *', timeZone: 'Asia/Seoul' }, async () => {
+  await setAllStocks((s) => ({ status: 'open', dayOpen: s.price ?? null }));
+});
+
+export const closeMarket = onSchedule({ schedule: '0 18 * * *', timeZone: 'Asia/Seoul' }, async () => {
+  // 종가를 prevClose 로 저장 → 다음날 등락률 기준.
+  await setAllStocks((s) => ({ status: 'closed', prevClose: s.price ?? null }));
 });

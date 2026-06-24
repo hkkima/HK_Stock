@@ -20,7 +20,7 @@ function StatusMsg({ msg }) {
 }
 
 function NewStock() {
-  const [f, setF] = useState({ id: '', name: '', team: '', price: 1000, liq: 200 });
+  const [f, setF] = useState({ id: '', name: '', team: '', base: 1000, slope: 5, totalShares: 1000 });
   const { busy, msg, run } = useAction();
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   return (
@@ -30,17 +30,23 @@ function NewStock() {
         <input placeholder="종목 ID (영문, 예: teamA)" value={f.id} onChange={set('id')} />
         <input placeholder="기업명" value={f.name} onChange={set('name')} />
         <input placeholder="팀/멤버" value={f.team} onChange={set('team')} />
-        <input type="number" placeholder="시작가" value={f.price} onChange={set('price')} />
-        <input type="number" placeholder="유동성 L" value={f.liq} onChange={set('liq')} />
+      </div>
+      <div className="row" style={{ marginTop: 8 }}>
+        <label className="muted">시작가<input type="number" style={{ width: 90, marginLeft: 4 }} value={f.base} onChange={set('base')} /></label>
+        <label className="muted">발행주식수<input type="number" style={{ width: 90, marginLeft: 4 }} value={f.totalShares} onChange={set('totalShares')} /></label>
+        <label className="muted">변동성(주당)<input type="number" style={{ width: 70, marginLeft: 4 }} value={f.slope} onChange={set('slope')} /></label>
         <button
           className="primary" disabled={busy}
           onClick={() => run(
-            () => upsertStock({ id: f.id, name: f.name, team: f.team, price: Number(f.price), liq: Number(f.liq), status: 'closed' }),
+            () => upsertStock({ id: f.id, name: f.name, team: f.team, base: Number(f.base), slope: Number(f.slope), totalShares: Number(f.totalShares), status: 'closed' }),
             (r) => `상장 완료: ${r.id}`,
           )}
         >상장</button>
       </div>
-      <p className="muted">시작가에는 펀더멘탈(강사 평가 등)을 반영해 주세요. 상장 후 거래는 '거래 열기'로 켭니다. 시세 변경은 ③ 시세조정으로만(총량 보존).</p>
+      <p className="muted">
+        발행주식수는 고정(무한발행 없음). <b>변동성</b>=1주 거래마다 시세가 움직이는 폭(클수록 출렁임 큼).
+        예: 시작가 1000·변동성 5면 100주 매수 시 시세 약 1500. 시작가엔 펀더멘탈 반영. 시세 변경은 ③ 시세조정으로만.
+      </p>
       <StatusMsg msg={msg} />
     </div>
   );
@@ -49,7 +55,9 @@ function NewStock() {
 function StockList() {
   const { stocks } = useApp();
   const { busy, msg, run } = useAction();
-  const [liqEdit, setLiqEdit] = useState({});
+  const [edit, setEdit] = useState({}); // { [id]: { slope, totalShares } }
+  const ev = (s, k) => (edit[s.id]?.[k] ?? (k === 'slope' ? s.slope : s.totalShares));
+  const setEv = (s, k) => (e) => setEdit({ ...edit, [s.id]: { ...edit[s.id], [k]: e.target.value } });
 
   function delist(s) {
     const def = String(s.price || 0);
@@ -69,19 +77,20 @@ function StockList() {
       <h3>상장 종목</h3>
       {stocks.length === 0 ? <p className="muted">없음</p> : (
         <table className="tbl">
-          <thead><tr><th>종목</th><th className="num">시세</th><th className="num">발행</th><th className="num">리저브</th><th>유동성</th><th>거래</th><th>관리</th></tr></thead>
+          <thead><tr><th>종목</th><th className="num">시세</th><th className="num">발행</th><th className="num">유통</th><th>변동성</th><th>거래</th><th>관리</th></tr></thead>
           <tbody>
             {stocks.map((s) => (
               <tr key={s.id}>
                 <td>{s.name} <span className="muted">{s.team}</span></td>
                 <td className="num mono">{(s.price || 0).toLocaleString()}</td>
-                <td className="num mono">{(s.sharesOut || 0).toLocaleString()}</td>
-                <td className="num mono">{(s.reserve || 0).toLocaleString()}</td>
                 <td>
-                  <input type="number" style={{ width: 70 }} value={liqEdit[s.id] ?? s.liq}
-                    onChange={(e) => setLiqEdit({ ...liqEdit, [s.id]: e.target.value })} />
+                  <input type="number" style={{ width: 70 }} value={ev(s, 'totalShares')} onChange={setEv(s, 'totalShares')} />
+                </td>
+                <td className="num mono">{(s.circulating || 0).toLocaleString()}</td>
+                <td>
+                  <input type="number" style={{ width: 56 }} value={ev(s, 'slope')} onChange={setEv(s, 'slope')} />
                   <button className="ghost" disabled={busy} style={{ marginLeft: 4 }}
-                    onClick={() => run(() => upsertStock({ id: s.id, liq: Number(liqEdit[s.id] ?? s.liq) }), () => 'L 저장')}>저장</button>
+                    onClick={() => run(() => upsertStock({ id: s.id, slope: Number(ev(s, 'slope')), totalShares: Number(ev(s, 'totalShares')) }), () => '저장')}>저장</button>
                 </td>
                 <td>
                   <button className={s.status === 'open' ? 'sell' : 'buy'} disabled={busy}
@@ -99,7 +108,7 @@ function StockList() {
           </tbody>
         </table>
       )}
-      <p className="muted">상폐는 거래를 닫은 뒤에만 가능합니다. 정산가 × 보유주를 지급하고(리저브 차액은 하우스 풀로 정산) 종목을 삭제합니다.</p>
+      <p className="muted">발행주식수·변동성은 수정 후 [저장]. 상폐는 거래를 닫은 뒤에만 — 정산가 × 보유주 지급(리저브 차액은 하우스 풀로) 후 종목 삭제. 자동 장운영: 매일 09:00 개장 / 18:00 마감.</p>
       <StatusMsg msg={msg} />
     </div>
   );
