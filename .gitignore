@@ -4,3 +4,10 @@ dist
 *.local
 .DS_Store
 functions/node_modules
+
+# 서비스 계정 키(테스트용) — 절대 커밋 금지
+*serviceAccount*.json
+*service-account*.json
+*sa-key*.json
+secrets/
+test-harness/node_modules

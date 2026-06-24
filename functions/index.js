@@ -32,7 +32,10 @@ function assertAuth(req) {
   if (!req.auth) throw new HttpsError('unauthenticated', '로그인이 필요합니다.');
 }
 function assertAdmin(req) {
-  const email = req.auth?.token?.email;
+  const t = req.auth?.token || {};
+  // 커스텀 클레임 admin:true (Admin SDK 로만 부여 가능) 또는 화이트리스트 이메일.
+  if (t.admin === true) return;
+  const email = t.email;
   if (!email || !ADMIN_EMAILS.includes(String(email).toLowerCase())) {
     throw new HttpsError('permission-denied', '운영자만 가능합니다.');
   }

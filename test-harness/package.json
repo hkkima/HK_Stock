@@ -1,0 +1,10 @@
+{
+  "name": "hk-stock-e2e",
+  "private": true,
+  "type": "module",
+  "description": "라이브 함수 대상 E2E 검증 하니스 (서비스 계정 키 필요). 커밋되지만 키는 인자로만 전달.",
+  "dependencies": {
+    "firebase": "^10.14.1",
+    "firebase-admin": "^12.6.0"
+  }
+}
