@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useApp } from '../state/AppContext.jsx';
-import { upsertStock, payDividend, adjustPrice, postNews, mintToHouse, delistStock } from '../data/store.js';
+import { upsertStock, payDividend, adjustPrice, postNews, mintToHouse, delistStock, setAutoNews, triggerNews } from '../data/store.js';
 
 function useAction() {
   const [busy, setBusy] = useState(false);
@@ -182,14 +182,31 @@ function Fundamentals() {
 }
 
 function NewsAndMint() {
-  const { stocks } = useApp();
+  const { stocks, stockBoard } = useApp();
   const { busy, msg, run } = useAction();
   const [news, setNews] = useState({ text: '', stockId: '' });
   const [mint, setMint] = useState({ amount: 10000, memo: '' });
+  const autoOn = !!stockBoard?.autoNewsEnabled;
   return (
     <div className="card">
       <h3>④ 뉴스 · 하우스 풀 발행</h3>
-      <div className="section-title">뉴스 (재미 요소). 시세 효과가 필요하면 ③에서 별도로.</div>
+
+      <div className="section-title">자동 뉴스(테마주) — 장중 랜덤 2~3회/일, 호재·악재 ±3~8% 시세 넛지.</div>
+      <div className="row">
+        <span className="pill" style={{ color: autoOn ? 'var(--open)' : 'var(--muted)', borderColor: autoOn ? 'var(--open)' : 'var(--line)' }}>
+          {autoOn ? '자동 ON' : '자동 OFF'}
+        </span>
+        <button className={autoOn ? 'sell' : 'buy'} disabled={busy}
+          onClick={() => run(() => setAutoNews(!autoOn), (r) => `자동 뉴스 ${r.autoNewsEnabled ? 'ON' : 'OFF'}`)}>
+          {autoOn ? '끄기' : '켜기'}
+        </button>
+        <button className="ghost" disabled={busy}
+          onClick={() => run(() => triggerNews(), (r) => r.skipped ? '대상 없음' : `발행: [${r.scope}] ${r.text}${r.applied ? '' : ' (헤드라인만)'}`)}>
+          지금 랜덤 뉴스 1건
+        </button>
+      </div>
+
+      <div className="section-title" style={{ marginTop: 16 }}>수동 뉴스. 시세 효과가 필요하면 ③에서 별도로.</div>
       <div className="row">
         <select value={news.stockId} onChange={(e) => setNews({ ...news, stockId: e.target.value })}>
           <option value="">전체</option>{stocks.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}

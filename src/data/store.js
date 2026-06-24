@@ -81,3 +81,9 @@ export async function mintToHouse(amount, memo) {
 export async function delistStock(stockId, settlePrice) {
   return (await callable('delistStock')({ stockId, settlePrice })).data;
 }
+export async function setAutoNews(enabled) {
+  return (await callable('setAutoNews')({ enabled })).data;
+}
+export async function triggerNews() {
+  return (await callable('triggerNews')({})).data;
+}

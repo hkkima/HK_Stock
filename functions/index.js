@@ -9,6 +9,7 @@ import { setGlobalOptions } from 'firebase-functions/v2';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { quoteBuy, quoteSell, nextAvgCost, priceAdjustDelta } from './market.js';
+import { generateNews, NEWS_TICK_PROB } from './news.js';
 
 // ★ 프론트 VITE_FUNCTIONS_REGION 과 일치(서울 리전) ★
 setGlobalOptions({ region: 'asia-northeast3' });
@@ -286,4 +287,27 @@ export const openMarket = onSchedule({ schedule: '0 9 * * *', timeZone: 'Asia/Se
 export const closeMarket = onSchedule({ schedule: '0 18 * * *', timeZone: 'Asia/Seoul' }, async () => {
   // 종가를 prevClose 로 저장 → 다음날 등락률 기준.
   await setAllStocks((s) => ({ status: 'closed', prevClose: s.price ?? null }));
+});
+
+// ── 자동 뉴스(테마주) — 엔진은 news.js(배포·하니스 공용) ────
+// 장중 30분 슬롯마다 확률적으로 1건(토글 ON일 때만).
+export const autoNews = onSchedule({ schedule: '*/30 9-17 * * *', timeZone: 'Asia/Seoul' }, async () => {
+  const bd = (await boardRef().get()).data() || {};
+  if (!bd.autoNewsEnabled) return;
+  if (Math.random() > NEWS_TICK_PROB) return;
+  await generateNews(db, FieldValue);
+});
+
+// 운영자: 자동뉴스 on/off
+export const setAutoNews = onCall(async (req) => {
+  assertAdmin(req);
+  const enabled = !!req.data?.enabled;
+  await boardRef().set({ autoNewsEnabled: enabled }, { merge: true });
+  return { autoNewsEnabled: enabled };
+});
+
+// 운영자: 지금 랜덤 뉴스 1건(연출·테스트)
+export const triggerNews = onCall(async (req) => {
+  assertAdmin(req);
+  return generateNews(db, FieldValue);
 });

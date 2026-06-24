@@ -208,9 +208,17 @@ export default function MarketPage() {
       {news.length > 0 && (
         <div className="card">
           <h3>📰 뉴스</h3>
-          {news.slice(0, 4).map((n, i) => (
-            <div className="news-item" key={i}>{n.text}<span className="when"> · {new Date(n.at).toLocaleString('ko-KR')}</span></div>
-          ))}
+          {news.slice(0, 5).map((n, i) => {
+            const up = n.polarity === 'good'; const down = n.polarity === 'bad';
+            return (
+              <div className="news-item" key={i}>
+                {(up || down) && <span className={up ? 'up' : 'down'} style={{ fontWeight: 700, marginRight: 4 }}>{up ? '▲' : '▼'}</span>}
+                {n.badge && <span className="co-tag" style={{ marginRight: 6 }}>{n.badge}</span>}
+                {n.text}
+                <span className="when"> · {new Date(n.at).toLocaleString('ko-KR')}</span>
+              </div>
+            );
+          })}
         </div>
       )}
       <div className="market-layout">
