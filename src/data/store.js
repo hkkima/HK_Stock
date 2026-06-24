@@ -70,3 +70,6 @@ export async function postNews(text, stockId) {
 export async function mintToHouse(amount, memo) {
   return (await callable('mintToHouse')({ amount, memo })).data;
 }
+export async function delistStock(stockId, settlePrice) {
+  return (await callable('delistStock')({ stockId, settlePrice })).data;
+}

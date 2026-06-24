@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useApp } from '../state/AppContext.jsx';
-import { upsertStock, payDividend, adjustPrice, postNews, mintToHouse } from '../data/store.js';
+import { upsertStock, payDividend, adjustPrice, postNews, mintToHouse, delistStock } from '../data/store.js';
 
 function useAction() {
   const [busy, setBusy] = useState(false);
@@ -50,12 +50,26 @@ function StockList() {
   const { stocks } = useApp();
   const { busy, msg, run } = useAction();
   const [liqEdit, setLiqEdit] = useState({});
+
+  function delist(s) {
+    const def = String(s.price || 0);
+    const input = window.prompt(
+      `「${s.name}」 상장폐지\n보유자에게 지급할 정산가(P/주)를 입력하세요.\n현재가 ${def} = 졸업 매수 / 0 = 부도`,
+      def,
+    );
+    if (input == null) return;
+    const sp = Math.floor(Number(input));
+    if (!(sp >= 0)) { window.alert('정산가는 0 이상이어야 합니다.'); return; }
+    if (!window.confirm(`정말 「${s.name}」을(를) 상장폐지합니까?\n정산가 ${sp.toLocaleString()}P로 보유자에게 지급 후 종목이 삭제됩니다. 되돌릴 수 없습니다.`)) return;
+    run(() => delistStock(s.id, sp), (r) => `상폐 완료: ${r.count}명에게 총 ${r.totalPayout.toLocaleString()}P 지급, 삭제됨`);
+  }
+
   return (
     <div className="card">
       <h3>상장 종목</h3>
       {stocks.length === 0 ? <p className="muted">없음</p> : (
         <table className="tbl">
-          <thead><tr><th>종목</th><th className="num">시세</th><th className="num">발행</th><th className="num">리저브</th><th>유동성</th><th>거래</th></tr></thead>
+          <thead><tr><th>종목</th><th className="num">시세</th><th className="num">발행</th><th className="num">리저브</th><th>유동성</th><th>거래</th><th>관리</th></tr></thead>
           <tbody>
             {stocks.map((s) => (
               <tr key={s.id}>
@@ -75,11 +89,17 @@ function StockList() {
                     {s.status === 'open' ? '닫기' : '열기'}
                   </button>
                 </td>
+                <td>
+                  <button className="ghost danger" disabled={busy || s.status === 'open'}
+                    title={s.status === 'open' ? '거래를 먼저 닫아야 상폐 가능' : '상장폐지(회사 삭제)'}
+                    onClick={() => delist(s)}>상폐</button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
+      <p className="muted">상폐는 거래를 닫은 뒤에만 가능합니다. 정산가 × 보유주를 지급하고(리저브 차액은 하우스 풀로 정산) 종목을 삭제합니다.</p>
       <StatusMsg msg={msg} />
     </div>
   );

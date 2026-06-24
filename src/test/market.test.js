@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  priceImpact, quoteBuy, quoteSell, nextAvgCost, holdingValue,
+  priceImpact, quoteBuy, quoteSell, quoteLadder, nextAvgCost, holdingValue,
   netWorth, priceAdjustDelta, MIN_PRICE,
 } from '../domain/market.js';
 
@@ -39,6 +39,14 @@ describe('quoteSell', () => {
   it('시세는 MIN_PRICE 아래로 안 내려감', () => {
     const q = quoteSell(stock(2, 1), 100); // 충격 거대
     expect(q.newPrice).toBe(MIN_PRICE);
+  });
+});
+
+describe('quoteLadder', () => {
+  it('수량별 매수/매도 체결가·시세이동', () => {
+    const rows = quoteLadder(stock(100, 50), [1, 5]);
+    expect(rows[0]).toMatchObject({ qty: 1, buyCost: 100, buyTo: 102, sellGet: 100, sellTo: 98 });
+    expect(rows[1]).toMatchObject({ qty: 5, buyCost: 500, buyTo: 110, sellGet: 500, sellTo: 90 });
   });
 });
 

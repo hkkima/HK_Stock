@@ -25,6 +25,13 @@ const ADMIN_EMAILS = ['jetsomk22@gmail.com'];
 const boardRef = () => db.doc('meta/stockBoard');
 const holdingId = (userId, stockId) => `${userId}__${stockId}`;
 
+// 시세 그래프용 가격 히스토리 — 최근 60틱만 보관(배열 비대화 방지).
+const HIST_CAP = 60;
+function appendHist(hist, p) {
+  const arr = Array.isArray(hist) ? hist : [];
+  return [...arr, { p, t: Date.now() }].slice(-HIST_CAP);
+}
+
 function assertAuth(req) {
   if (!req.auth) throw new HttpsError('unauthenticated', '로그인이 필요합니다.');
 }
@@ -73,6 +80,7 @@ export const trade = onCall(async (req) => {
         price: newPrice,
         reserve: (stock.reserve || 0) + Q.cost,
         sharesOut: (stock.sharesOut || 0) + q,
+        priceHistory: appendHist(stock.priceHistory, newPrice),
       });
     } else {
       if ((holding.shares || 0) < q) throw new HttpsError('failed-precondition', '보유 수량이 부족합니다.');
@@ -85,6 +93,7 @@ export const trade = onCall(async (req) => {
         price: newPrice,
         reserve: (stock.reserve || 0) - Q.proceeds,
         sharesOut: (stock.sharesOut || 0) - q,
+        priceHistory: appendHist(stock.priceHistory, newPrice),
       });
     }
 
@@ -120,6 +129,7 @@ export const upsertStock = onCall(async (req) => {
     await ref.set({
       name: name || sid, team: team || '', price: p, liq: L,
       reserve: 0, sharesOut: 0, status: status || 'closed',
+      priceHistory: [{ p, t: Date.now() }],
       createdAt: FieldValue.serverTimestamp(),
     });
     return { id: sid, created: true };
@@ -183,7 +193,11 @@ export const adjustPrice = onCall(async (req) => {
     const delta = priceAdjustDelta(s.price, np, s.sharesOut || 0);
     const house = bSnap.exists ? (bSnap.data().housePool || 0) : 0;
     if (delta > house) throw new HttpsError('failed-precondition', `상향 보조에 하우스 풀 부족(필요 ${delta}, 보유 ${house}).`);
-    tx.update(sRef, { price: np, reserve: (s.reserve || 0) + delta });
+    tx.update(sRef, {
+      price: np,
+      reserve: (s.reserve || 0) + delta,
+      priceHistory: appendHist(s.priceHistory, np),
+    });
     tx.set(boardRef(), { housePool: house - delta }, { merge: true });
     tx.set(db.collection('ledger').doc(), {
       stockId, type: 'price_adjust', oldPrice: s.price, newPrice: np, delta, memo: memo || '',
@@ -224,4 +238,57 @@ export const mintToHouse = onCall(async (req) => {
     });
   });
   return { ok: true, amount: amt };
+});
+
+// ── 운영자: 상장폐지(회사 삭제) ─────────────────────────────
+//   보유자에게 settlePrice × 보유주 지급(미지정 시 현재가=졸업 매수, 0=부도).
+//   리저브 제거분과 지급분 차액은 하우스 풀이 흡수/보전 → 총량 보존. 거래는 먼저 닫아야 함.
+export const delistStock = onCall(async (req) => {
+  assertAdmin(req);
+  const { stockId, settlePrice } = req.data || {};
+  if (!stockId) throw new HttpsError('invalid-argument', 'stockId가 필요합니다.');
+  const sp = settlePrice == null ? null : Math.floor(Number(settlePrice));
+  if (sp != null && !(sp >= 0)) throw new HttpsError('invalid-argument', '정산가는 0 이상이어야 합니다.');
+
+  const hs = await db.collection('holdings').where('stockId', '==', stockId).get();
+  const holders = [];
+  hs.forEach((d) => { const h = d.data(); if ((h.shares || 0) > 0) holders.push({ userId: h.userId, shares: h.shares }); });
+  const allHoldingRefs = hs.docs.map((d) => d.ref);
+
+  return db.runTransaction(async (tx) => {
+    const sRef = db.doc(`stocks/${stockId}`);
+    const [sSnap, bSnap] = await Promise.all([tx.get(sRef), tx.get(boardRef())]);
+    if (!sSnap.exists) throw new HttpsError('not-found', '종목을 찾을 수 없습니다.');
+    const s = sSnap.data();
+    if (s.status === 'open') throw new HttpsError('failed-precondition', '거래를 먼저 닫은 뒤 상장폐지하세요.');
+    const price = sp == null ? (s.price || 0) : sp; // 기본 = 현재가(졸업 매수)
+    const reserve = s.reserve || 0;
+
+    const uRefs = holders.map((h) => db.doc(`users/${h.userId}`));
+    const uSnaps = await Promise.all(uRefs.map((r) => tx.get(r)));
+    let totalPayout = 0;
+    uSnaps.forEach((snap, i) => {
+      if (!snap.exists) return;
+      const pay = price * holders[i].shares;
+      totalPayout += pay;
+      if (pay > 0) tx.update(uRefs[i], { balance: (snap.data().balance || 0) + pay });
+    });
+
+    const house = bSnap.exists ? (bSnap.data().housePool || 0) : 0;
+    const newHouse = house + (reserve - totalPayout);
+    if (newHouse < 0) {
+      throw new HttpsError('failed-precondition',
+        `상폐 정산에 하우스 풀 부족(부족분 ${-newHouse}). 먼저 발행하거나 정산가를 낮추세요.`);
+    }
+    tx.set(boardRef(), { housePool: newHouse }, { merge: true });
+
+    allHoldingRefs.forEach((r) => tx.delete(r));
+    tx.delete(sRef);
+    tx.set(db.collection('ledger').doc(), {
+      stockId, type: 'delist', settlePrice: price, totalPayout,
+      reserveReturned: reserve - totalPayout, count: holders.length,
+      ts: FieldValue.serverTimestamp(),
+    });
+    return { stockId, settlePrice: price, totalPayout, count: holders.length };
+  });
 });

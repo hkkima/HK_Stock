@@ -41,6 +41,16 @@ export function quoteSell(stock, qty) {
   return { side: 'sell', qty: q, price, proceeds, newPrice };
 }
 
+// 호가 사다리(AMM): 여러 수량에 대한 매수/매도 체결가·시세이동 미리보기.
+//   진짜 주문매칭 호가창이 아니라, "이만큼 사면/팔면 얼마에 체결되고 시세가 어디로 가는지"의 사다리.
+export function quoteLadder(stock, qtys) {
+  return qtys.map((q) => {
+    const b = quoteBuy(stock, q);
+    const s = quoteSell(stock, q);
+    return { qty: q, buyCost: b.cost, buyTo: b.newPrice, sellGet: s.proceeds, sellTo: s.newPrice };
+  });
+}
+
 // 매수 후 평단가(가중평균). oldShares 0 이면 새 평단 = 체결가.
 export function nextAvgCost(oldShares, oldAvg, addQty, fillPrice) {
   const total = oldShares + addQty;
