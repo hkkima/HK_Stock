@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
-import { isConfigured, ensureAnonAuth, signInWithGoogle, isAdminEmail } from '../data/firebase.js';
+import { isConfigured, ensureAnonAuth, signInWithGoogle, isAdminEmail, watchAuth } from '../data/firebase.js';
 import {
   subscribeStocks, subscribeHoldings, subscribeUsers, subscribeStockBoard, subscribeStockTraits,
   getUser, getUserByName, createUser,
@@ -18,10 +18,17 @@ export function AppProvider({ children }) {
   const [users, setUsers] = useState([]);
   const [stockBoard, setStockBoard] = useState(null);
   const [traitsByStock, setTraitsByStock] = useState({}); // 운영자만 채워짐
+  const [fbUser, setFbUser] = useState(undefined); // undefined=초기화 전, null=미인증, obj=인증됨
   const [session, setSession] = useState(() => {
     try { return JSON.parse(localStorage.getItem(SESSION_KEY)) || { role: 'guest' }; }
     catch { return { role: 'guest' }; }
   });
+
+  // Firebase 인증 상태 추적(운영자 구글 세션 만료 감지).
+  useEffect(() => {
+    if (!configured) return undefined;
+    return watchAuth(setFbUser);
+  }, [configured]);
 
   // 전역 구독(데이터가 작아 전체 구독). 참가자는 익명 인증 확보(함수 호출용).
   useEffect(() => {
@@ -92,9 +99,12 @@ export function AppProvider({ children }) {
     [holdings, session],
   );
 
+  // 운영자 세션인데 Firebase 구글 인증이 끊김 → 함수 호출 불가, 재로그인 필요.
+  const adminReauthNeeded = configured && session.role === 'admin' && fbUser === null;
+
   const value = {
     configured, stocks, holdings, users, stockBoard, traitsByStock,
-    session, myUser, myHoldings, priceOf,
+    session, myUser, myHoldings, priceOf, adminReauthNeeded,
     loginParticipant, registerParticipant, loginAdmin, logout,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

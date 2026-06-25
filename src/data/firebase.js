@@ -8,6 +8,7 @@ import {
   signInAnonymously,
   GoogleAuthProvider,
   signInWithPopup,
+  onAuthStateChanged,
 } from 'firebase/auth';
 
 function readConfig() {
@@ -41,8 +42,20 @@ export function getFirebase() {
 }
 
 // 호출 가능 함수 래퍼 — 모든 거래/펀더멘탈 변동은 이걸 통과한다.
+//   인증 누락(internal/unauthenticated)은 재로그인 안내 메시지로 변환.
 export function callable(name) {
-  return httpsCallable(getFirebase().functions, name);
+  const fn = httpsCallable(getFirebase().functions, name);
+  return async (data) => {
+    try { return await fn(data); }
+    catch (e) {
+      const code = String(e?.code || '');
+      if (/unauthenticated|internal|unauthorized|permission-denied/.test(code)) {
+        const err = new Error('운영자 로그인이 만료된 것 같습니다. [계정]에서 Google로 다시 로그인 후 시도하세요.');
+        err.code = code; throw err;
+      }
+      throw e;
+    }
+  };
 }
 
 let anonPromise = null;
@@ -73,6 +86,12 @@ export async function signInWithGoogle() {
   const provider = new GoogleAuthProvider();
   const cred = await signInWithPopup(auth, provider);
   return cred.user;
+}
+
+// Firebase 인증 상태 추적(운영자 구글 세션 만료 감지용). 콜백에 user|null.
+export function watchAuth(cb) {
+  try { return onAuthStateChanged(getFirebase().auth, cb); }
+  catch { cb(null); return () => {}; }
 }
 
 export function adminEmails() {

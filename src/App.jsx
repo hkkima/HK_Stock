@@ -7,8 +7,12 @@ import AdminPage from './pages/AdminPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 
 export default function App() {
-  const { configured, session, myUser, logout } = useApp();
+  const { configured, session, myUser, logout, adminReauthNeeded, loginAdmin } = useApp();
   const [tab, setTab] = useState('market');
+
+  async function reauth() {
+    try { await loginAdmin(); } catch (e) { window.alert(e.message); }
+  }
 
   const isAdmin = session.role === 'admin';
   const isParticipant = session.role === 'participant';
@@ -37,6 +41,12 @@ export default function App() {
       </header>
 
       <div className="wrap">
+        {adminReauthNeeded && (
+          <div className="banner" style={{ background: '#3a0a0a', borderColor: 'var(--down)', color: 'var(--down)' }}>
+            🔑 운영자 구글 인증이 만료됐습니다(발행·배당·뉴스 등 운영자 동작이 안 됩니다).
+            <button className="primary" style={{ marginLeft: 8 }} onClick={reauth}>Google로 다시 로그인</button>
+          </div>
+        )}
         {!configured && (
           <div className="banner">
             ⚙️ Firebase가 아직 설정되지 않았어요. <code>.env</code>에 <code>VITE_FIREBASE_*</code> 값(베팅판과 동일한 프로젝트)을
