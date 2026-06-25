@@ -21,18 +21,20 @@ function ChgPill({ pct }) {
 
 // 큰 시세 차트 — priceHistory(최근 60틱) + 전일종가 점선.
 function BigChart({ stock }) {
-  const pts = (stock.priceHistory || []).map((h) => h.p);
-  if (pts.length < 2) return <div className="bigchart-empty muted">거래가 시작되면 차트가 그려집니다.</div>;
+  let pts = (stock.priceHistory || []).map((h) => h.p);
+  if (pts.length === 0 && stock.price != null) pts = [stock.price];
+  if (pts.length === 1) pts = [pts[0], pts[0]]; // 신규 상장: 평평한 선이라도 항상 표시(장 상태 무관)
+  if (pts.length < 2) return <div className="bigchart-empty muted">시세 데이터가 없습니다.</div>;
   const W = 620; const H = 220; const pad = 18;
   const prev = stock.prevClose;
   const all = prev != null ? [...pts, prev] : pts;
-  const min = Math.min(...all); const max = Math.max(...all); const range = max - min || 1;
+  const min = Math.min(...all); const max = Math.max(...all); const range = max - min;
   const x = (i) => (i / (pts.length - 1)) * (W - 2 * pad) + pad;
-  const y = (p) => H - pad - ((p - min) / range) * (H - 2 * pad);
+  const y = (p) => (range === 0 ? H / 2 : H - pad - ((p - min) / range) * (H - 2 * pad));
   const line = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)} ${y(p).toFixed(1)}`).join(' ');
   const area = `${line} L ${x(pts.length - 1).toFixed(1)} ${H - pad} L ${x(0).toFixed(1)} ${H - pad} Z`;
   const up = pts[pts.length - 1] >= (prev ?? pts[0]);
-  const color = up ? 'var(--up)' : 'var(--down)';
+  const color = range === 0 ? 'var(--muted)' : (up ? 'var(--up)' : 'var(--down)');
   return (
     <svg className="bigchart" viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="시세 차트">
       {prev != null && (
