@@ -12,6 +12,8 @@
 - **라이브**: 프론트 `https://hkkima.github.io/HK_Stock/`, 백엔드 프로젝트 `hk-chess-betting`(★베팅판과 공유★).
 - **리포**: `github.com/hkkima/HK_Stock` (main 푸시 → Actions 자동 배포).
 
+> 🛠 **개발을 이어받는 사람/에이전트는 [9. 개발자·에이전트 인수인계](#9-개발자에이전트-인수인계-먼저-읽기)를 먼저 읽어라.** 깨면 안 되는 불변식과 라이브 운영 작업 방식이 거기 있다.
+
 ---
 
 ## 1. 설계 관점 (왜 이렇게 만들었나)
@@ -160,6 +162,82 @@ meta/stockBoard             { housePool, news[], autoNewsEnabled }
 - 스톡옵션 잠금 해제(과정 종료 시 정산/매도 허용).
 - 발행주식수 현실화(시총 왜곡 해소).
 - 뉴스 개별 삭제/템플릿 편집 UI.
+
+---
+
+## 9. 개발자·에이전트 인수인계 (먼저 읽기)
+
+라이브 시스템(실수강생 24명·실포인트, 베팅판과 공유)이다. **아래 불변식을 깨면 학생 데이터/포인트가 망가진다.**
+
+### 9.1 절대 불변식 (깨면 안 됨)
+
+1. **총량 보존 — housePool은 `FieldValue.increment`로만 변경.**
+   `meta/stockBoard`를 read해서 housePool을 절대값으로 set 하지 마라. 시세 틱이 매분 이 문서를 갱신하므로 read-modify-write 트랜잭션은 충돌→재시도 초과→`internal` 에러가 난다(실제 겪음: 발행 버튼 먹통). 포인트를 옮기는 동작은 **반대편을 같은 increment로 정산**해 합계를 보존한다.
+2. **체결은 결정적으로.** 매수/매도 가격에 랜덤을 넣지 마라 → "사고 곧바로 팔면 본전" 보장이 깨지고 **포인트 복사 버그가 재발**한다. 무작위성은 `tick.js` 노이즈 레이어로만(시세를 흔들되 체결식은 결정적).
+3. **`market.js` 두 사본은 바이트 동일.** `src/domain/market.js` ≡ `functions/market.js` (`diff`로 점검). 한쪽만 고치면 프론트 미리보기와 서버 체결이 어긋난다.
+4. **곡선 양수: `base ≥ 1`.** 시세 하향 시 `newBase < 1`이면 거부/클램프. 시세 하한 = `slope × circulating`.
+5. **모든 포인트·시세·보유 변경은 Cloud Functions(Admin SDK)만.** 클라이언트는 읽기 전용. `firestore.rules`가 클라의 직접 잔액 증가를 차단. 새 쓰기 경로를 만들면 규칙도 같이 손본다.
+6. **`users`는 베팅판과 공유.** `firestore.rules`는 베팅+주식 **통합본**(이 리포가 진실원천·상위집합). 베팅 규칙(참가자는 잔액 감소만 등)을 깨지 마라.
+
+### 9.2 개발·배포 워크플로우
+
+- 테스트/빌드: `npm test`(vitest, 순수 도메인만), `npm run build`, `npm run dev`(:5290). 도메인 로직은 `src/domain/market.js` 등 **순수 함수로 빼서 테스트**하는 게 컨벤션.
+- 함수 배포: `firebase deploy --only functions --project hk-chess-betting`. 간헐적 `Internal error`는 GCP 일시장애 → ~45초 후 재시도. 첫 배포 시 IAM(컴퓨트 SA에 `cloudbuild.builds.builder`) 필요했음.
+- 규칙 배포: `firebase deploy --only firestore:rules --project hk-chess-betting`.
+- 프론트: `main` 푸시 → GitHub Actions → Pages. **리포 이름이 `HK_Stock`** 이어야 `vite.config.js` base(`/HK_Stock/`)와 맞는다.
+- ★일치시킬 3쌍★: 리전(`asia-northeast3` = 프론트 `VITE_FUNCTIONS_REGION` = `setGlobalOptions` = 배포 리전) / 운영자 이메일(functions `ADMIN_EMAILS` = rules = 프론트 `VITE_ADMIN_EMAILS`) / market.js 두 사본.
+- 셸은 PowerShell — `&&` 안 됨(`;` 또는 줄 분리). 커밋 메시지는 `-m` 여러 개로(여기서 heredoc은 자주 깨짐).
+
+### 9.3 라이브 운영·검증은 "서비스 계정 키 + Admin SDK"로
+
+- ★**Node에서 콜러블 함수 직접 호출이 안 된다**★ (Cloud Run + Node fetch의 Authorization 처리 차이로 인증 실패. 브라우저 경로는 정상). 그래서 시드·마이그레이션·일괄작업(발행·분할·옵션 지급 등)과 검증은 **firebase-admin(서비스 계정 키)으로 Firestore 직접 조작**한다. `test-harness/`에 패턴이 있다(`seed.mjs`). 키는 리포 밖·`.gitignore`, 사용 후 콘솔에서 로테이션.
+- 검증: 순수 엔진을 키로 라이브 데이터에 실행(`applyTick`, `generateNews`)하거나, 브라우저를 preview 도구로 `localStorage` 세션 주입 후 구동. **`total()`(Σ지갑+Σ리저브+하우스) 측정은 비원자**라 동시 거래로 ±수백 노이즈가 낀다 — 한 동작의 보존은 통제된 환경에서 확인.
+- 일괄 스크립트는 **부분 실패 대비**(예: 분할에서 `totalShares` ×배수를 빠뜨려 옵션 발행이 중간에 막혔던 사고). 트랜잭션·try/catch·진행로그·보존 체크를 넣어라.
+
+### 9.4 위험 지역 (조심)
+
+- `meta/stockBoard` = **핫 문서**(틱이 매분 housePool, autoNews가 news 배열 갱신). 여기를 read-modify-write 하면 충돌. increment 패턴 유지.
+- `trade` 함수는 **실수강생이 실시간 사용**. 수정 시 본전보장·자사주 매수금지·잠금주식 매도금지 로직 보존.
+- `slope`/`totalShares`/분할 편집은 `reserve`를 곡선과 **어긋나게** 한다(과/부족 funding). 총량은 보존되지만 "갇힌 초과분"이 생기고 상폐 정산에서 흡수된다. 포인트 생성은 아님.
+- 변동성은 **정수만**(음수=역방향·음수가격, 소수=포인트 소수화·부동소수 오차로 본전보장 흔들림).
+
+### 9.5 코드 지도
+
+```
+functions/
+  index.js   콜러블·스케줄 17개 (assertAdmin/assertAuth, boardRef, appendHist)
+  market.js  본드커브 순수엔진 (quoteBuy/Sell, rangeSum, priceAdjustDelta)  ← src와 동일
+  news.js    뉴스 엔진(generateNews: 개별/업종/특성 타겟)
+  tick.js    시세 틱(tickDelta: OU 평균회귀)
+src/
+  data/firebase.js   init + callable() 래퍼(에러→재로그인/일시오류 매핑) + watchAuth
+  data/store.js      구독(stocks/holdings/users/board/series) + 함수 래퍼
+  state/AppContext.jsx  세션·로그인·구독·인증상태(adminReauthNeeded)
+  domain/market.js   ← functions/market.js와 바이트 동일
+  pages/  MarketPage(시세·차트·지수·거래) PortfolioPage(매도) NewsPage
+          LeaderboardPage AdminPage(운영 6섹션) LoginPage
+firestore.rules  베팅+주식 통합본(진실원천)
+test-harness/    서비스계정 키로 시드·검증(seed.mjs)
+```
+
+### 9.6 기능 추가 체크리스트
+
+- 포인트를 옮기나? → **increment로 양쪽 정산** + 총량 보존 확인.
+- `market.js`를 건드리나? → **두 사본 동기화**(diff).
+- 콜러블 추가? → `store.js` 래퍼 + (운영자면) `assertAdmin` + 리전 일치 + UI.
+- 새 컬렉션/하위컬렉션? → `firestore.rules`에 read 규칙(쓰기는 `if false`=함수만).
+- 시세를 바꾸나? → `base≥1`, 곡선/리저브 정합, **펀더멘탈 변경이면 `centerBase`도 같이 이동**(노이즈가 새 기준으로 수렴).
+- 학생에게 노출되나? → 특성(traits)·변동성(slope)은 **숨김** 정책 유지(뱃지 '테마', 변동성 비표시).
+- 라이브 마이그레이션? → 보존 체크 + 부분실패 대비 + 키는 안전 처리.
+
+### 9.7 의사결정 로그 (사용자가 선택한 관점 — 함부로 뒤집지 말 것)
+
+- 거래 모델: **고정발행 본드커브**(P2P 호가창 ✕ — 유동성 문제).
+- 거래 실행: **Cloud Functions 권위**(규칙 전용 ✕ — 매도 시 잔액 증가가 베팅 규칙과 충돌).
+- 시세 틱: 1분, σ는 slope 비례(기준 ±1%), 중앙 수렴.
+- 자동뉴스: 하루 2~3회, ±3~8%, 개별40/업종30/특성30(악재 비중 상향 0.5).
+- 스톡옵션: 공식 발행(시세 반영)·거래금지.
+- 시가총액: 발행주식수 기준.
 
 ---
 *최종 갱신: 2026-06-25. 함수 17개, 라이브 운영 중(수강생 24명·종목 14개).*
