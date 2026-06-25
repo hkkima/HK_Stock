@@ -78,7 +78,11 @@ function TradePanel({ stock }) {
   const [msg, setMsg] = useState(null);
 
   const open = stock.status === 'open';
-  const held = myHoldings.find((h) => h.stockId === stock.id)?.shares || 0;
+  const myHolding = myHoldings.find((h) => h.stockId === stock.id);
+  const held = myHolding?.shares || 0;
+  const locked = myHolding?.locked || 0; // 스톡옵션(거래금지)
+  const sellable = held - locked;
+  const isMember = Array.isArray(stock.members) && stock.members.includes(session.userId); // 자사주
   const balance = myUser?.balance || 0;
   const q = Math.floor(Number(qty)) || 0;
 
@@ -86,8 +90,8 @@ function TradePanel({ stock }) {
   try { if (q > 0) buyQ = quoteBuy(stock, q); } catch { buyQ = null; }
   try { if (q > 0) sellQ = quoteSell(stock, q); } catch { sellQ = null; }
 
-  const canBuy = open && q > 0 && buyQ && buyQ.cost <= balance;
-  const canSell = open && q > 0 && sellQ && q <= held;
+  const canBuy = open && !isMember && q > 0 && buyQ && buyQ.cost <= balance;
+  const canSell = open && q > 0 && sellQ && q <= sellable;
 
   async function go(side) {
     setBusy(true); setMsg(null);
@@ -104,8 +108,9 @@ function TradePanel({ stock }) {
         <input type="number" min="1" value={qty} onChange={(e) => setQty(e.target.value)} aria-label="수량" />
         <button className="buy" disabled={!canBuy || busy} onClick={() => go('buy')}>매수</button>
         <button className="sell" disabled={!canSell || busy} onClick={() => go('sell')}>매도</button>
-        <span className="muted mono">보유 {held}주 · 현금 {balance.toLocaleString()}P</span>
+        <span className="muted mono">보유 {held}주{locked > 0 ? ` (잠금 ${locked})` : ''} · 현금 {balance.toLocaleString()}P</span>
       </div>
+      {isMember && <p className="muted" style={{ marginTop: 6 }}>🔒 자사주는 매수할 수 없습니다(스톡옵션으로만 보유).</p>}
       {open && q > 0 && (
         <div className="meta mono" style={{ marginTop: 6 }}>
           {buyQ ? `매수 −${buyQ.cost.toLocaleString()}P (→${buyQ.newPrice.toLocaleString()})` : '매수 불가(발행 초과)'} ·

@@ -66,8 +66,12 @@ export const trade = onCall(async (req) => {
     const holding = hSnap.exists ? hSnap.data() : { shares: 0, avgCost: 0 };
     const balance = user.balance || 0;
 
+    const isMember = Array.isArray(stock.members) && stock.members.includes(userId);
+    const locked = holding.locked || 0;
+
     let cashDelta; let newShares; let newAvg; let fillPrice; let Q;
     if (side === 'buy') {
+      if (isMember) throw new HttpsError('failed-precondition', '자사주는 매수할 수 없습니다(스톡옵션으로만 보유).');
       try { Q = quoteBuy(stock, q); } catch (e) { throw new HttpsError('failed-precondition', e.message); }
       if (Q.cost > balance) throw new HttpsError('failed-precondition', '잔액이 부족합니다.');
       cashDelta = -Q.cost;
@@ -75,7 +79,8 @@ export const trade = onCall(async (req) => {
       newShares = (holding.shares || 0) + q;
       newAvg = nextAvgCost(holding.shares || 0, holding.avgCost || 0, q, Q.cost / q);
     } else {
-      if ((holding.shares || 0) < q) throw new HttpsError('failed-precondition', '보유 수량이 부족합니다.');
+      // 스톡옵션(locked)은 매도 불가 → 매도 가능 수량 = 보유 − 잠금.
+      if ((holding.shares || 0) - locked < q) throw new HttpsError('failed-precondition', '매도 가능 수량이 부족합니다(스톡옵션 제외).');
       try { Q = quoteSell(stock, q); } catch (e) { throw new HttpsError('failed-precondition', e.message); }
       cashDelta = Q.proceeds;
       fillPrice = Math.round(Q.proceeds / q);
@@ -101,7 +106,7 @@ export const trade = onCall(async (req) => {
 //   상장: 발행주식수(고정)·시작가(base)·변동성(slope) 지정. 시세는 이후 adjustPrice 로만.
 export const upsertStock = onCall(async (req) => {
   assertAdmin(req);
-  const { id, name, team, base, slope, totalShares, status, sector, traits } = req.data || {};
+  const { id, name, team, base, slope, totalShares, status, sector, traits, members } = req.data || {};
   const sid = String(id || '').trim();
   if (!sid) throw new HttpsError('invalid-argument', 'id가 필요합니다.');
   const ref = db.doc(`stocks/${sid}`);
@@ -134,6 +139,7 @@ export const upsertStock = onCall(async (req) => {
   if (name != null) patch.name = name;
   if (team != null) patch.team = team;
   if (sector != null) patch.sector = sector; // 업종(공개·1개)
+  if (Array.isArray(members)) patch.members = [...new Set(members.map(String).filter(Boolean))]; // 소속 멤버(userId)
   if (status != null) patch.status = status;
   if (slope != null) patch.slope = Math.max(1, Math.floor(Number(slope)));
   if (totalShares != null) {
@@ -166,6 +172,47 @@ export const payDividend = onCall(async (req) => {
     tx.set(db.collection('ledger').doc(), { stockId, type: 'dividend', perShare: ps, total, count: payouts.length, ts: FieldValue.serverTimestamp() });
   });
   return { stockId, perShare: ps, total, count: payouts.length };
+});
+
+// ── 운영자: 스톡옵션 지급(자사주, 거래금지) ─────────────────
+//   멤버에게 qty주를 곡선가로 정식 발행. 하우스 풀이 공급가 대납(총량 보존). holding.locked += qty(매도 불가).
+export const grantOption = onCall(async (req) => {
+  assertAdmin(req);
+  const { stockId, userId, qty } = req.data || {};
+  const q = Math.floor(Number(qty));
+  if (!stockId || !userId || !(q > 0)) throw new HttpsError('invalid-argument', 'stockId/userId/qty(1+) 필요.');
+
+  return db.runTransaction(async (tx) => {
+    const sRef = db.doc(`stocks/${stockId}`);
+    const hRef = db.doc(`holdings/${holdingId(userId, stockId)}`);
+    const [sSnap, hSnap, uSnap] = await Promise.all([tx.get(sRef), tx.get(hRef), tx.get(db.doc(`users/${userId}`))]);
+    if (!sSnap.exists) throw new HttpsError('not-found', '종목을 찾을 수 없습니다.');
+    if (!uSnap.exists) throw new HttpsError('not-found', '학생 계정을 찾을 수 없습니다.');
+    const stock = { ...sSnap.data(), circulating: sSnap.data().circulating || 0, reserve: sSnap.data().reserve || 0 };
+    if (!(Array.isArray(stock.members) && stock.members.includes(userId))) {
+      throw new HttpsError('failed-precondition', '해당 기업 소속 멤버에게만 스톡옵션을 줄 수 있습니다.');
+    }
+    let Q;
+    try { Q = quoteBuy(stock, q); } catch (e) { throw new HttpsError('failed-precondition', e.message); }
+    const holding = hSnap.exists ? hSnap.data() : { shares: 0, locked: 0, avgCost: 0 };
+
+    tx.update(sRef, {
+      circulating: Q.newCirculating,
+      reserve: stock.reserve + Q.cost,
+      price: Q.newPrice,
+      priceHistory: appendHist(stock.priceHistory, Q.newPrice),
+    });
+    tx.set(hRef, {
+      userId, stockId,
+      shares: (holding.shares || 0) + q,
+      locked: (holding.locked || 0) + q,
+      avgCost: nextAvgCost(holding.shares || 0, holding.avgCost || 0, q, Q.cost / q),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    tx.set(boardRef(), { housePool: FieldValue.increment(-Q.cost) }, { merge: true }); // 공급가 대납
+    tx.set(db.collection('ledger').doc(), { stockId, userId, type: 'option_grant', qty: q, cost: Q.cost, ts: FieldValue.serverTimestamp() });
+    return { stockId, userId, qty: q, cost: Q.cost, newPrice: Q.newPrice };
+  });
 });
 
 // ── 운영자: 펀더멘탈 시세 조정(곡선 평행이동, 총량 보존) ────

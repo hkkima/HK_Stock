@@ -102,3 +102,6 @@ export async function setAutoNews(enabled) {
 export async function triggerNews() {
   return (await callable('triggerNews')({})).data;
 }
+export async function grantOption(stockId, userId, qty) {
+  return (await callable('grantOption')({ stockId, userId, qty })).data;
+}

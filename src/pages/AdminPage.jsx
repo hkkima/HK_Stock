@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useApp } from '../state/AppContext.jsx';
-import { upsertStock, payDividend, adjustPrice, postNews, mintToHouse, delistStock, setAutoNews, triggerNews } from '../data/store.js';
+import { upsertStock, payDividend, adjustPrice, postNews, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption } from '../data/store.js';
 
 function useAction() {
   const [busy, setBusy] = useState(false);
@@ -250,6 +250,66 @@ function Reconcile() {
   );
 }
 
+function MembersOptions() {
+  const { stocks, users } = useApp();
+  const { busy, msg, run } = useAction();
+  const nameById = Object.fromEntries(users.map((u) => [u.id, u.name || u.id]));
+  const idByName = Object.fromEntries(users.map((u) => [(u.name || '').trim(), u.id]));
+  const [memEdit, setMemEdit] = useState({}); // {stockId: "이름,이름"}
+  const [grant, setGrant] = useState({ stockId: '', userId: '', qty: 10 });
+
+  const memText = (s) => (memEdit[s.id] ?? (s.members || []).map((id) => nameById[id] || id).join(', '));
+  function saveMembers(s) {
+    const names = String(memEdit[s.id] ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+    const ids = names.map((n) => idByName[n]).filter(Boolean);
+    const unknown = names.filter((n) => !idByName[n]);
+    return run(() => upsertStock({ id: s.id, members: ids }), () => `멤버 ${ids.length}명 저장${unknown.length ? ` (못 찾음: ${unknown.join(',')})` : ''}`);
+  }
+
+  const grantStock = stocks.find((s) => s.id === grant.stockId);
+  const grantMembers = (grantStock?.members || []);
+
+  return (
+    <div className="card">
+      <h3>⑤ 멤버 · 스톡옵션 (자사주)</h3>
+
+      <div className="section-title">기업 멤버 지정 — 멤버는 자사주를 매수할 수 없습니다. 이름을 쉼표로.</div>
+      <table className="tbl">
+        <thead><tr><th>종목</th><th>멤버(이름, 쉼표 구분)</th><th></th></tr></thead>
+        <tbody>
+          {stocks.map((s) => (
+            <tr key={s.id}>
+              <td>{s.name}</td>
+              <td><input style={{ width: '100%', minWidth: 220 }} value={memText(s)} onChange={(e) => setMemEdit({ ...memEdit, [s.id]: e.target.value })} placeholder="김민성, 이예성" /></td>
+              <td><button className="ghost" disabled={busy} onClick={() => saveMembers(s)}>저장</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="section-title" style={{ marginTop: 16 }}>스톡옵션 지급 — 멤버에게 거래금지 자사주를 발행(하우스 풀 대납, 매도 불가).</div>
+      <div className="row">
+        <select value={grant.stockId} onChange={(e) => setGrant({ ...grant, stockId: e.target.value, userId: '' })}>
+          <option value="">종목 선택</option>
+          {stocks.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <select value={grant.userId} onChange={(e) => setGrant({ ...grant, userId: e.target.value })} disabled={!grant.stockId}>
+          <option value="">멤버 선택</option>
+          {grantMembers.map((id) => <option key={id} value={id}>{nameById[id] || id}</option>)}
+        </select>
+        <input type="number" min="1" style={{ width: 80 }} value={grant.qty} onChange={(e) => setGrant({ ...grant, qty: e.target.value })} />
+        <span className="muted">주</span>
+        <button className="primary" disabled={busy || !grant.stockId || !grant.userId}
+          onClick={() => run(() => grantOption(grant.stockId, grant.userId, Number(grant.qty)), (r) => `지급: ${r.qty}주 (공급가 ${r.cost.toLocaleString()}P 대납)`)}>
+          스톡옵션 지급
+        </button>
+      </div>
+      {grantStock && grantMembers.length === 0 && <p className="muted">먼저 위에서 이 종목의 멤버를 지정하세요.</p>}
+      <StatusMsg msg={msg} />
+    </div>
+  );
+}
+
 export default function AdminPage() {
   return (
     <div>
@@ -257,6 +317,7 @@ export default function AdminPage() {
       <NewStock />
       <StockList />
       <Fundamentals />
+      <MembersOptions />
       <NewsAndMint />
     </div>
   );
