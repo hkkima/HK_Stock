@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useApp } from './state/AppContext.jsx';
 import MarketPage from './pages/MarketPage.jsx';
 import PortfolioPage from './pages/PortfolioPage.jsx';
+import NewsPage from './pages/NewsPage.jsx';
 import LeaderboardPage from './pages/LeaderboardPage.jsx';
 import AdminPage from './pages/AdminPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
@@ -27,6 +28,7 @@ export default function App() {
         <h1>📈 수강생 주식판</h1>
         <nav className="tabs">
           <button className={tab === 'market' ? 'active' : ''} onClick={() => setTab('market')}>시세</button>
+          <button className={tab === 'news' ? 'active' : ''} onClick={() => setTab('news')}>뉴스</button>
           {isParticipant && <button className={tab === 'me' ? 'active' : ''} onClick={() => setTab('me')}>내 자산</button>}
           <button className={tab === 'rank' ? 'active' : ''} onClick={() => setTab('rank')}>리더보드</button>
           {isAdmin && <button className={tab === 'admin' ? 'active' : ''} onClick={() => setTab('admin')}>운영자</button>}
@@ -54,6 +56,7 @@ export default function App() {
           </div>
         )}
         {tab === 'market' && <MarketPage />}
+        {tab === 'news' && <NewsPage />}
         {tab === 'me' && isParticipant && <PortfolioPage />}
         {tab === 'rank' && <LeaderboardPage />}
         {tab === 'admin' && isAdmin && <AdminPage />}
