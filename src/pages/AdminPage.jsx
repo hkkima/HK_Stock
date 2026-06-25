@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useApp } from '../state/AppContext.jsx';
-import { upsertStock, payDividend, adjustPrice, postNews, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice } from '../data/store.js';
+import { upsertStock, payDividend, adjustPrice, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice, postImpactNews } from '../data/store.js';
 
 function useAction() {
   const [busy, setBusy] = useState(false);
@@ -182,11 +182,14 @@ function Fundamentals() {
 }
 
 function NewsAndMint() {
-  const { stocks, stockBoard } = useApp();
+  const { stocks, stockBoard, traitsByStock } = useApp();
   const { busy, msg, run } = useAction();
-  const [news, setNews] = useState({ text: '', stockId: '' });
+  const [imp, setImp] = useState({ text: '', scope: 'all', target: '', pct: 0 });
   const [mint, setMint] = useState({ amount: 10000, memo: '' });
   const autoOn = !!stockBoard?.autoNewsEnabled;
+  const sectors = [...new Set(stocks.map((s) => s.sector).filter(Boolean))];
+  const traits = [...new Set(Object.values(traitsByStock).flat())];
+  const setI = (k) => (e) => setImp({ ...imp, [k]: e.target.value });
   return (
     <div className="card">
       <h3>④ 뉴스 · 하우스 풀 발행</h3>
@@ -206,15 +209,37 @@ function NewsAndMint() {
         </button>
       </div>
 
-      <div className="section-title" style={{ marginTop: 16 }}>수동 뉴스. 시세 효과가 필요하면 ③에서 별도로.</div>
+      <div className="section-title" style={{ marginTop: 16 }}>뉴스 작성 + 시세 조작 — 대상(종목/업종/테마)에 시세 효과 동시 적용.</div>
       <div className="row">
-        <select value={news.stockId} onChange={(e) => setNews({ ...news, stockId: e.target.value })}>
-          <option value="">전체</option>{stocks.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        <select value={imp.scope} onChange={(e) => setImp({ ...imp, scope: e.target.value, target: '' })}>
+          <option value="all">전체 시장</option>
+          <option value="stock">특정 종목</option>
+          <option value="sector">업종(공개)</option>
+          <option value="trait">테마(특성·비공개)</option>
         </select>
-        <input placeholder="뉴스 내용" style={{ flex: 1, minWidth: 200 }} value={news.text} onChange={(e) => setNews({ ...news, text: e.target.value })} />
-        <button className="primary" disabled={busy || !news.text.trim()}
-          onClick={() => run(() => postNews(news.text, news.stockId || null), () => '게시됨')}>게시</button>
+        {imp.scope === 'stock' && (
+          <select value={imp.target} onChange={setI('target')}>
+            <option value="">종목 선택</option>{stocks.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        )}
+        {imp.scope === 'sector' && (
+          <select value={imp.target} onChange={setI('target')}>
+            <option value="">업종 선택</option>{sectors.map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+        )}
+        {imp.scope === 'trait' && (
+          <select value={imp.target} onChange={setI('target')}>
+            <option value="">특성 선택</option>{traits.map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+        )}
+        <label className="muted">시세<input type="number" style={{ width: 64, marginLeft: 4 }} value={imp.pct} onChange={setI('pct')} />%</label>
       </div>
+      <div className="row" style={{ marginTop: 8 }}>
+        <input placeholder="뉴스 내용(헤드라인)" style={{ flex: 1, minWidth: 240 }} value={imp.text} onChange={setI('text')} />
+        <button className="primary" disabled={busy || !imp.text.trim() || (imp.scope !== 'all' && !imp.target)}
+          onClick={() => run(() => postImpactNews({ text: imp.text, scope: imp.scope, target: imp.target || null, pct: Number(imp.pct) }), (r) => `게시: ${r.count}종목 ${r.pct >= 0 ? '+' : ''}${r.pct}%`)}>게시</button>
+      </div>
+      <p className="muted">시세 %는 양수=호재(하우스 풀 충당)·음수=악재·0=헤드라인만. 업종/테마 선택 시 해당 종목 전체에 동반 적용.</p>
 
       <div className="section-title" style={{ marginTop: 16 }}>하우스 풀 발행/소각 — 유일한 총량 변동 경로(인플레 조절). 음수=소각.</div>
       <div className="row">

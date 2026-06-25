@@ -108,3 +108,6 @@ export async function grantOption(stockId, userId, qty) {
 export async function marketReprice(pct) {
   return (await callable('marketReprice')({ pct })).data;
 }
+export async function postImpactNews({ text, scope, target, pct }) {
+  return (await callable('postImpactNews')({ text, scope, target, pct })).data;
+}

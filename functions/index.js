@@ -284,6 +284,55 @@ export const postNews = onCall(async (req) => {
   return { ok: true };
 });
 
+// ── 운영자: 영향 뉴스 — 작성 + 대상(종목/업종/테마) 시세 동시 조작 ─
+//   scope: all|stock|sector|trait, target: id/sector명/특성명, pct: 시세 ±%(0=효과없음).
+export const postImpactNews = onCall(async (req) => {
+  assertAdmin(req);
+  const { text, scope, target, pct } = req.data || {};
+  if (!text || !String(text).trim()) throw new HttpsError('invalid-argument', '내용이 필요합니다.');
+  const sc = ['all', 'stock', 'sector', 'trait'].includes(scope) ? scope : 'all';
+  const p = Number(pct) || 0;
+  if (p <= -100) throw new HttpsError('invalid-argument', 'pct는 -100 초과.');
+
+  const ss = await db.collection('stocks').get();
+  let stocks = ss.docs.map((d) => ({ ref: d.ref, id: d.id, ...d.data() }));
+  let badge = '시장';
+  if (sc === 'stock') { stocks = stocks.filter((s) => s.id === target); badge = stocks[0]?.name || String(target); }
+  else if (sc === 'sector') { stocks = stocks.filter((s) => s.sector === target); badge = String(target); }
+  else if (sc === 'trait') {
+    const tr = await db.collection('stockTraits').get();
+    const tmap = Object.fromEntries(tr.docs.map((d) => [d.id, d.data().traits || []]));
+    stocks = stocks.filter((s) => (tmap[s.id] || []).includes(target)); badge = '테마'; // 특성명은 숨김
+  }
+  const f = 1 + p / 100;
+  for (const s of stocks) {
+    if (p === 0 || s.base == null) continue;
+    // eslint-disable-next-line no-await-in-loop
+    await db.runTransaction(async (tx) => {
+      const fr = (await tx.get(s.ref)).data();
+      if (!fr || fr.base == null) return;
+      const circ = fr.circulating || 0;
+      const cur = fr.base + fr.slope * circ;
+      let np = Math.max(1, Math.round(cur * f));
+      let nb = np - fr.slope * circ;
+      if (nb < 1) { nb = 1; np = 1 + fr.slope * circ; }
+      const delta = (np - cur) * circ;
+      tx.update(s.ref, { base: nb, centerBase: (fr.centerBase ?? fr.base) + (nb - fr.base), price: np, reserve: (fr.reserve || 0) + delta, priceHistory: appendHist(fr.priceHistory, np) });
+      tx.set(boardRef(), { housePool: FieldValue.increment(-delta) }, { merge: true });
+    });
+  }
+  const polarity = p > 0 ? 'good' : p < 0 ? 'bad' : 'flat';
+  const stockIds = stocks.map((s) => s.id);
+  await db.runTransaction(async (tx) => {
+    const bSnap = await tx.get(boardRef());
+    const news = (bSnap.exists && Array.isArray(bSnap.data().news)) ? bSnap.data().news : [];
+    const entry = { text: String(text).trim(), polarity, scope: sc, badge, stockIds, at: Date.now() };
+    tx.set(boardRef(), { news: [entry, ...news].slice(0, 50) }, { merge: true });
+  });
+  await db.collection('ledger').add({ type: 'impact_news', scope: sc, target: target || null, pct: p, count: stockIds.length, ts: FieldValue.serverTimestamp() });
+  return { scope: sc, badge, pct: p, count: stockIds.length };
+});
+
 // ── 운영자: 하우스 풀 발행/소각 (유일한 총량 변동) ─────────
 export const mintToHouse = onCall(async (req) => {
   assertAdmin(req);
