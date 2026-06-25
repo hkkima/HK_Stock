@@ -128,7 +128,7 @@ function DetailPanel({ stock }) {
   const pct = pctChange(stock);
   const open = stock.status === 'open';
   const held = myHoldings.find((h) => h.stockId === stock.id)?.shares || 0;
-  const marketCap = (stock.price || 0) * (stock.circulating || 0);
+  const marketCap = (stock.price || 0) * (stock.totalShares || 0); // 시가총액 = 현재가 × 발행주식수
 
   const [period, setPeriod] = useState('1일');
   const [series, setSeries] = useState([]); // 분봉 {p,t}
@@ -184,7 +184,6 @@ function DetailPanel({ stock }) {
         <div className="s"><div className="k">발행</div><div className="v mono">{(stock.totalShares || 0).toLocaleString()}</div></div>
         <div className="s"><div className="k">유통</div><div className="v mono">{(stock.circulating || 0).toLocaleString()}</div></div>
         <div className="s"><div className="k">시가총액</div><div className="v mono">{marketCap.toLocaleString()}</div></div>
-        <div className="s"><div className="k">변동성(주당)</div><div className="v mono">{stock.slope}</div></div>
         {session.role === 'participant' && <div className="s"><div className="k">내 보유</div><div className="v mono up">{held}</div></div>}
       </div>
       {session.role === 'participant'
@@ -223,6 +222,22 @@ function CompanyList({ stocks, selectedId, onSelect }) {
   );
 }
 
+// HK 종합지수 — 상장 종목의 (현재가/기준가) 평균 × 100 (등가중 수익률 지수, 시작=100).
+function MarketIndex({ stocks }) {
+  const valid = stocks.filter((s) => s.refPrice > 0 && s.price > 0);
+  if (valid.length === 0) return null;
+  const idx = (valid.reduce((a, s) => a + s.price / s.refPrice, 0) / valid.length) * 100;
+  const chg = idx - 100; const up = chg >= 0;
+  return (
+    <div className="card" style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+      <span style={{ fontWeight: 700 }}>📊 HK 종합지수</span>
+      <span className="mono" style={{ fontSize: 22, fontWeight: 800 }}>{idx.toFixed(1)}</span>
+      <span className={`chg ${up ? 'up' : 'down'}`}>{up ? '▲' : '▼'} {Math.abs(chg).toFixed(1)} ({chg >= 0 ? '+' : ''}{chg.toFixed(1)}%)</span>
+      <span className="muted" style={{ fontSize: 11 }}>상장일 기준 100 · {valid.length}종목</span>
+    </div>
+  );
+}
+
 export default function MarketPage() {
   const { stocks, session, stockBoard } = useApp();
   const sorted = useMemo(
@@ -245,6 +260,7 @@ export default function MarketPage() {
   return (
     <div>
       {session.role === 'guest' && <div className="banner">👀 보기 전용입니다. 거래하려면 [로그인] 후 이용하세요.</div>}
+      <MarketIndex stocks={sorted} />
       {news.length > 0 && (
         <div className="card">
           <h3>📰 뉴스</h3>

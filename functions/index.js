@@ -126,7 +126,7 @@ export const upsertStock = onCall(async (req) => {
     await ref.set({
       name: name || sid, team: team || '', sector: sector || '',
       base: b, centerBase: b, slope: sl, totalShares: tot, circulating: 0, reserve: 0,
-      price: b, prevClose: b, dayOpen: b,
+      price: b, prevClose: b, dayOpen: b, refPrice: b,
       status: status || 'closed',
       priceHistory: [{ p: b, t: Date.now() }],
       createdAt: FieldValue.serverTimestamp(),
@@ -239,6 +239,35 @@ export const adjustPrice = onCall(async (req) => {
     tx.set(db.collection('ledger').doc(), { stockId, type: 'price_adjust', oldPrice: curPrice, newPrice: np, delta, memo: memo || '', ts: FieldValue.serverTimestamp() });
     return { stockId, oldPrice: curPrice, newPrice: np, delta };
   });
+});
+
+// ── 운영자: 시장 전체 일괄 조정(통합 인플레/디플레 레버) ────
+//   모든 종목 시세를 ±pct% 일괄 이동(곡선 바닥에서 멈춤). 차액은 reserve↔housePool(총량 보존).
+export const marketReprice = onCall(async (req) => {
+  assertAdmin(req);
+  const pct = Number(req.data?.pct);
+  if (!Number.isFinite(pct) || pct === 0 || pct <= -100) throw new HttpsError('invalid-argument', 'pct(0 아님, >-100) 필요.');
+  const f = 1 + pct / 100;
+  const snap = await db.collection('stocks').get();
+  let applied = 0;
+  for (const d of snap.docs) {
+    // eslint-disable-next-line no-await-in-loop
+    await db.runTransaction(async (tx) => {
+      const s = (await tx.get(d.ref)).data();
+      if (!s || s.base == null) return;
+      const circ = s.circulating || 0;
+      const cur = s.base + s.slope * circ;
+      let np = Math.max(1, Math.round(cur * f));
+      let nb = np - s.slope * circ;
+      if (nb < 1) { nb = 1; np = 1 + s.slope * circ; } // 곡선 바닥에서 멈춤
+      const delta = (np - cur) * circ;
+      tx.update(d.ref, { base: nb, centerBase: (s.centerBase ?? s.base) + (nb - s.base), price: np, reserve: (s.reserve || 0) + delta, priceHistory: appendHist(s.priceHistory, np) });
+      tx.set(boardRef(), { housePool: FieldValue.increment(-delta) }, { merge: true });
+    });
+    applied += 1;
+  }
+  await db.collection('ledger').add({ type: 'market_reprice', pct, ts: FieldValue.serverTimestamp() });
+  return { pct, count: applied };
 });
 
 // ── 운영자: 뉴스 피드 ───────────────────────────────────────

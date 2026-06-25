@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useApp } from '../state/AppContext.jsx';
-import { upsertStock, payDividend, adjustPrice, postNews, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption } from '../data/store.js';
+import { upsertStock, payDividend, adjustPrice, postNews, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice } from '../data/store.js';
 
 function useAction() {
   const [busy, setBusy] = useState(false);
@@ -232,20 +232,39 @@ function NewsAndMint() {
 
 function Reconcile() {
   const { users, stocks, stockBoard } = useApp();
+  const { busy, msg, run } = useAction();
+  const [pct, setPct] = useState(-20);
   const walletSum = users.reduce((s, u) => s + (u.balance || 0), 0);
   const reserveSum = stocks.reduce((s, st) => s + (st.reserve || 0), 0);
   const house = stockBoard?.housePool || 0;
   const total = walletSum + reserveSum + house;
+  const mcap = stocks.reduce((s, st) => s + (st.price || 0) * (st.totalShares || 0), 0);
+
+  function reprice() {
+    const p = Number(pct);
+    if (!window.confirm(`전체 ${stocks.length}종목 시세를 ${p}% 일괄 조정합니다. 되돌리려면 반대 %로 다시. 진행할까요?`)) return;
+    run(() => marketReprice(p), (r) => `시장 ${r.pct}% 조정 완료 (${r.count}종목)`);
+  }
+
   return (
     <div className="card">
-      <h3>총량 점검 (지갑 + 리저브 + 하우스 = 전체)</h3>
+      <h3>총량 점검 · 시장 통제</h3>
       <div className="recon">
         <div className="box"><div className="k">Σ 학생 지갑</div><div className="v mono">{walletSum.toLocaleString()}</div></div>
         <div className="box"><div className="k">Σ AMM 리저브</div><div className="v mono">{reserveSum.toLocaleString()}</div></div>
         <div className="box"><div className="k">하우스 풀</div><div className="v mono">{house.toLocaleString()}</div></div>
         <div className="box"><div className="k">전체 포인트</div><div className="v mono" style={{ color: 'var(--accent)' }}>{total.toLocaleString()}</div></div>
+        <div className="box"><div className="k">시가총액 합(발행)</div><div className="v mono">{mcap.toLocaleString()}</div></div>
       </div>
-      <p className="muted">전체 포인트는 발행/소각(④)으로만 변합니다. 거래·배당·시세조정은 위 세 칸 사이의 이동일 뿐 합계 불변.</p>
+      <p className="muted">전체 포인트(돈)는 발행/소각(④)으로만 변하고, <b>users는 베팅판과 공유</b>라 베팅 지급도 반영됩니다. 시가총액(자산값)은 시세 상승으로 커집니다.</p>
+
+      <div className="section-title">시장 전체 일괄 조정 — 자산 인플레/디플레 통합 레버. 음수=전체 하락.</div>
+      <div className="row">
+        <input type="number" style={{ width: 80 }} value={pct} onChange={(e) => setPct(e.target.value)} /><span className="muted">%</span>
+        <button className="primary" disabled={busy} onClick={reprice}>전체 적용</button>
+        <span className="muted">예: −20 → 모든 종목 시세 20% 하향(차액은 하우스 풀로, 총량 보존).</span>
+      </div>
+      <StatusMsg msg={msg} />
     </div>
   );
 }

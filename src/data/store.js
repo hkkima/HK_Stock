@@ -105,3 +105,6 @@ export async function triggerNews() {
 export async function grantOption(stockId, userId, qty) {
   return (await callable('grantOption')({ stockId, userId, qty })).data;
 }
+export async function marketReprice(pct) {
+  return (await callable('marketReprice')({ pct })).data;
+}
