@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../state/AppContext.jsx';
-import { trade } from '../data/store.js';
+import { trade, subscribeSeries, getCandles } from '../data/store.js';
 import { quoteBuy, quoteSell, quoteLadder } from '../domain/market.js';
 
 const LOGO_COLORS = ['#5dcaa5', '#85b7eb', '#f0997b', '#ed93b1', '#fac775', '#97c459', '#afa9ec', '#f09595'];
@@ -19,14 +19,12 @@ function ChgPill({ pct }) {
   return <span className={`chg-pill ${up ? 'up' : 'down'}`}>{up ? '▲' : '▼'} {Math.abs(pct).toFixed(2)}%</span>;
 }
 
-// 큰 시세 차트 — priceHistory(최근 60틱) + 전일종가 점선.
-function BigChart({ stock }) {
-  let pts = (stock.priceHistory || []).map((h) => h.p);
-  if (pts.length === 0 && stock.price != null) pts = [stock.price];
-  if (pts.length === 1) pts = [pts[0], pts[0]]; // 신규 상장: 평평한 선이라도 항상 표시(장 상태 무관)
+// 큰 시세 차트 — 가격 배열(values) + 선택적 전일종가(prev) 점선.
+function BigChart({ values, prev }) {
+  let pts = (values || []).filter((v) => typeof v === 'number');
+  if (pts.length === 1) pts = [pts[0], pts[0]]; // 데이터 1개면 평평한 선이라도 항상 표시(장 상태 무관)
   if (pts.length < 2) return <div className="bigchart-empty muted">시세 데이터가 없습니다.</div>;
   const W = 620; const H = 220; const pad = 18;
-  const prev = stock.prevClose;
   const all = prev != null ? [...pts, prev] : pts;
   const min = Math.min(...all); const max = Math.max(...all); const range = max - min;
   const x = (i) => (i / (pts.length - 1)) * (W - 2 * pad) + pad;
@@ -126,6 +124,35 @@ function DetailPanel({ stock }) {
   const open = stock.status === 'open';
   const held = myHoldings.find((h) => h.stockId === stock.id)?.shares || 0;
   const marketCap = (stock.price || 0) * (stock.circulating || 0);
+
+  const [period, setPeriod] = useState('1일');
+  const [series, setSeries] = useState([]); // 분봉 {p,t}
+  const [candles, setCandles] = useState([]); // 일봉 {date,o,h,l,c}
+
+  // 선택된 종목의 분봉만 실시간 구독(대역폭 절약)
+  useEffect(() => {
+    setSeries([]);
+    const unsub = subscribeSeries(stock.id, setSeries);
+    return () => unsub && unsub();
+  }, [stock.id]);
+
+  // 1주/전체 탭이면 일봉 조회
+  useEffect(() => {
+    if (period === '1일') return;
+    let alive = true;
+    getCandles(stock.id, period === '1주' ? 7 : 90).then((c) => { if (alive) setCandles(c); }).catch(() => {});
+    return () => { alive = false; };
+  }, [stock.id, period]);
+
+  let values; let chartPrev = null;
+  if (period === '1일') {
+    values = series.length ? series.map((p) => p.p) : [stock.price]; // 분봉 없으면 현재가 평선
+    chartPrev = stock.prevClose;
+  } else {
+    values = candles.map((c) => c.c); // 일봉 종가
+    if (values.length === 0) values = [stock.price];
+  }
+
   return (
     <div className="card detail">
       <div className="d-hd">
@@ -141,7 +168,13 @@ function DetailPanel({ stock }) {
           {pct >= 0 ? '▲' : '▼'} {Math.abs(pct).toFixed(2)}% · 전일 {(stock.prevClose || 0).toLocaleString()}
         </span>
       )}
-      <BigChart stock={stock} />
+      <div className="row" style={{ gap: 4, marginTop: 8 }}>
+        {['1일', '1주', '전체'].map((p) => (
+          <button key={p} className={`chart-tab ${period === p ? 'active' : ''}`} onClick={() => setPeriod(p)}>{p}</button>
+        ))}
+        <span className="muted" style={{ fontSize: 11 }}>{period === '1일' ? '분단위' : '일단위'}</span>
+      </div>
+      <BigChart values={values} prev={chartPrev} />
       <div className="stat-row">
         <div className="s"><div className="k">발행</div><div className="v mono">{(stock.totalShares || 0).toLocaleString()}</div></div>
         <div className="s"><div className="k">유통</div><div className="v mono">{(stock.circulating || 0).toLocaleString()}</div></div>

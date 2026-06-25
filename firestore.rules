@@ -77,6 +77,11 @@ service cloud.firestore {
     match /stocks/{stockId} {
       allow read: if true;
       allow write: if false;
+      // 분봉(series)·일봉(candles) 등 하위 시세 이력도 공개 읽기, 쓰기는 함수만.
+      match /{sub=**} {
+        allow read: if true;
+        allow write: if false;
+      }
     }
     match /holdings/{holdingId} {
       allow read: if true;

@@ -5,7 +5,7 @@
 //   계정 생성/조회: users 는 베팅판과 공유. (가입 규칙은 firestore.rules 가 강제)
 
 import {
-  doc, collection, getDoc, getDocs, setDoc, onSnapshot, query, where,
+  doc, collection, getDoc, getDocs, setDoc, onSnapshot, query, where, orderBy, limit,
 } from 'firebase/firestore';
 import { getFirebase, callable } from './firebase.js';
 
@@ -31,6 +31,21 @@ export function subscribeUsers(cb) {
 export function subscribeStockBoard(cb) {
   return onSnapshot(stockBoardRef(), (snap) => cb(snap.exists() ? snap.data() : null));
 }
+// 분봉(intraday) 실시간 구독 — 선택된 종목 하나만(대역폭 절약).
+export function subscribeSeries(stockId, cb) {
+  return onSnapshot(
+    doc(getFirebase().db, 'stocks', stockId, 'series', 'intraday'),
+    (snap) => cb(snap.exists() ? (snap.data().points || []) : []),
+    () => cb([]),
+  );
+}
+// 일봉(candles) 조회 — 1주/전체 차트용. 날짜 오름차순.
+export async function getCandles(stockId, limitN = 90) {
+  const q = query(collection(getFirebase().db, 'stocks', stockId, 'candles'), orderBy('date', 'desc'), limit(limitN));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => d.data()).reverse();
+}
+
 // 종목 특성(비공개) — 운영자만 읽기 가능(규칙). 비운영자가 호출하면 권한 오류 → 호출 측에서 admin 일 때만.
 export function subscribeStockTraits(cb) {
   return onSnapshot(

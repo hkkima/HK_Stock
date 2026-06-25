@@ -92,7 +92,9 @@ table.ladder td, table.ladder th { padding: 4px 4px; font-size: 12px; }
 .chg-pill.up { color: var(--up); background: rgba(227,93,106,.14); }
 .chg-pill.down { color: var(--down); background: rgba(77,144,224,.14); }
 
-.bigchart { display: block; background: var(--panel2); border-radius: 10px; margin: 10px 0; }
+.chart-tab { background: var(--panel2); color: var(--muted); border: 1px solid var(--line); border-radius: 7px; padding: 4px 12px; cursor: pointer; font-size: 13px; }
+.chart-tab.active { background: var(--accent); color: #1a1200; border-color: var(--accent); font-weight: 700; }
+.bigchart { display: block; background: var(--panel2); border-radius: 10px; margin: 8px 0; }
 .bigchart-empty { height: 200px; display: flex; align-items: center; justify-content: center; background: var(--panel2); border-radius: 10px; margin: 10px 0; font-size: 13px; }
 .caxis { fill: var(--muted); font-size: 11px; }
 

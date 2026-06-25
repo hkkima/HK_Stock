@@ -10,6 +10,7 @@ import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { quoteBuy, quoteSell, nextAvgCost, priceAdjustDelta } from './market.js';
 import { generateNews, NEWS_TICK_PROB } from './news.js';
+import { applyTick } from './tick.js';
 
 // ★ 프론트 VITE_FUNCTIONS_REGION 과 일치(서울 리전) ★
 setGlobalOptions({ region: 'asia-northeast3' });
@@ -119,7 +120,7 @@ export const upsertStock = onCall(async (req) => {
     }
     await ref.set({
       name: name || sid, team: team || '', sector: sector || '',
-      base: b, slope: sl, totalShares: tot, circulating: 0, reserve: 0,
+      base: b, centerBase: b, slope: sl, totalShares: tot, circulating: 0, reserve: 0,
       price: b, prevClose: b, dayOpen: b,
       status: status || 'closed',
       priceHistory: [{ p: b, t: Date.now() }],
@@ -183,12 +184,14 @@ export const adjustPrice = onCall(async (req) => {
     const s = sSnap.data();
     const circ = s.circulating || 0;
     const curPrice = s.base + s.slope * circ;
-    const newBase = s.base + (np - curPrice);
+    const shift = np - curPrice;
+    const newBase = s.base + shift;
     if (newBase < 1) throw new HttpsError('failed-precondition', '시세를 그만큼 낮추면 곡선이 음수가 됩니다.');
     const delta = priceAdjustDelta(curPrice, np, circ);
     const house = bSnap.exists ? (bSnap.data().housePool || 0) : 0;
     if (delta > house) throw new HttpsError('failed-precondition', `상향 보조에 하우스 풀 부족(필요 ${delta}, 보유 ${house}).`);
-    tx.update(sRef, { base: newBase, price: np, reserve: (s.reserve || 0) + delta, priceHistory: appendHist(s.priceHistory, np) });
+    // 펀더멘탈 변경이므로 centerBase(평균회귀 중심)도 같이 이동 → 노이즈가 새 기준으로 수렴.
+    tx.update(sRef, { base: newBase, centerBase: (s.centerBase ?? s.base) + shift, price: np, reserve: (s.reserve || 0) + delta, priceHistory: appendHist(s.priceHistory, np) });
     tx.set(boardRef(), { housePool: house - delta }, { merge: true });
     tx.set(db.collection('ledger').doc(), { stockId, type: 'price_adjust', oldPrice: curPrice, newPrice: np, delta, memo: memo || '', ts: FieldValue.serverTimestamp() });
     return { stockId, oldPrice: curPrice, newPrice: np, delta };
@@ -281,12 +284,34 @@ async function setAllStocks(patchFromStock) {
 }
 
 export const openMarket = onSchedule({ schedule: '0 9 * * *', timeZone: 'Asia/Seoul' }, async () => {
-  await setAllStocks((s) => ({ status: 'open', dayOpen: s.price ?? null }));
+  const snap = await db.collection('stocks').get();
+  const batch = db.batch();
+  snap.forEach((d) => {
+    const s = d.data();
+    batch.update(d.ref, { status: 'open', dayOpen: s.price ?? null });
+    // 당일 분봉 초기화(오늘 차트 새로 시작)
+    batch.set(d.ref.collection('series').doc('intraday'), { points: [{ p: s.price ?? 0, t: Date.now() }] });
+  });
+  await batch.commit();
 });
 
 export const closeMarket = onSchedule({ schedule: '0 18 * * *', timeZone: 'Asia/Seoul' }, async () => {
-  // 종가를 prevClose 로 저장 → 다음날 등락률 기준.
-  await setAllStocks((s) => ({ status: 'closed', prevClose: s.price ?? null }));
+  const snap = await db.collection('stocks').get();
+  const date = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' }); // YYYY-MM-DD
+  for (const d of snap.docs) {
+    const s = d.data();
+    // 당일 분봉으로 일봉(OHLC) 집계 → candles/{date}
+    const ser = await d.ref.collection('series').doc('intraday').get();
+    const pts = (ser.exists && Array.isArray(ser.data().points)) ? ser.data().points.map((x) => x.p) : [s.price];
+    const candle = { date, o: pts[0], h: Math.max(...pts), l: Math.min(...pts), c: s.price ?? pts[pts.length - 1] };
+    await d.ref.collection('candles').doc(date).set(candle);
+    await d.ref.update({ status: 'closed', prevClose: s.price ?? null });
+  }
+});
+
+// ── 실시간 시세 틱 — 장중 매 1분, 랜덤 평균회귀 노이즈(엔진은 tick.js) ───
+export const marketTick = onSchedule({ schedule: '* 9-17 * * *', timeZone: 'Asia/Seoul' }, async () => {
+  await applyTick(db, FieldValue);
 });
 
 // ── 자동 뉴스(테마주) — 엔진은 news.js(배포·하니스 공용) ────

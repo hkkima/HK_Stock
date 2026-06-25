@@ -85,7 +85,7 @@ export async function generateNews(db, FieldValue) {
     if (dir > 0 && totalDelta > house) applied = false; // 하우스 부족 → 헤드라인만
     if (applied) {
       for (const m of moves) {
-        tx.update(m.ref, { base: m.s.base + (m.np - m.cur), price: m.np, reserve: (m.s.reserve || 0) + m.delta, priceHistory: appendHist(m.s.priceHistory, m.np) });
+        tx.update(m.ref, { base: m.s.base + (m.np - m.cur), centerBase: (m.s.centerBase ?? m.s.base) + (m.np - m.cur), price: m.np, reserve: (m.s.reserve || 0) + m.delta, priceHistory: appendHist(m.s.priceHistory, m.np) });
       }
       house -= totalDelta;
     }
