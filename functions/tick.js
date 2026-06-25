@@ -32,30 +32,34 @@ export async function applyTick(db, FieldValue) {
   const ss = await db.collection('stocks').get();
   const open = ss.docs.filter((d) => d.data().status === 'open' && d.data().base != null);
   if (open.length === 0) return { ticked: 0 };
-  let ticked = 0;
+  let ticked = 0; let totalCost = 0;
   for (const doc of open) {
     const sRef = doc.ref;
     const serRef = sRef.collection('series').doc('intraday');
     try {
+      // 종목당 독립 트랜잭션(stock+series 만). board 는 안 건드림 → 발행/배당 등과 충돌 없음.
       // eslint-disable-next-line no-await-in-loop
-      await db.runTransaction(async (tx) => {
+      const cost = await db.runTransaction(async (tx) => {
         const [sSnap, serSnap] = await Promise.all([tx.get(sRef), tx.get(serRef)]);
-        if (!sSnap.exists) return;
+        if (!sSnap.exists) return 0;
         const s = sSnap.data();
-        if (s.status !== 'open' || s.base == null) return;
+        if (s.status !== 'open' || s.base == null) return 0;
         const circ = s.circulating || 0;
         const center = s.centerBase ?? s.base;
         const dBase = tickDelta(s);
         const newBase = s.base + dBase;
         const newPrice = newBase + s.slope * circ;
-        const cost = dBase * circ; // >0 이면 하우스가 충당(음수 허용)
-        tx.update(sRef, { base: newBase, centerBase: center, price: newPrice, reserve: (s.reserve || 0) + cost });
+        tx.update(sRef, { base: newBase, centerBase: center, price: newPrice, reserve: (s.reserve || 0) + dBase * circ });
         const pts = (serSnap.exists && Array.isArray(serSnap.data().points)) ? serSnap.data().points : [];
         tx.set(serRef, { points: [...pts, { p: newPrice, t: Date.now() }].slice(-SERIES_CAP) }, { merge: true });
-        tx.set(db.doc('meta/stockBoard'), { housePool: FieldValue.increment(-cost) }, { merge: true });
+        return dBase * circ;
       });
-      ticked += 1;
+      totalCost += cost; ticked += 1;
     } catch (e) { /* 충돌/일시오류는 다음 틱에 복구 */ }
+  }
+  // 총량 보존: 이번 틱의 시세 변동분을 하우스 풀에서 한 번에 정산(increment, 충돌 없음).
+  if (totalCost !== 0) {
+    try { await db.doc('meta/stockBoard').set({ housePool: FieldValue.increment(-totalCost) }, { merge: true }); } catch (e) { /* noop */ }
   }
   return { ticked };
 }

@@ -87,10 +87,10 @@ export async function generateNews(db, FieldValue) {
       for (const m of moves) {
         tx.update(m.ref, { base: m.s.base + (m.np - m.cur), centerBase: (m.s.centerBase ?? m.s.base) + (m.np - m.cur), price: m.np, reserve: (m.s.reserve || 0) + m.delta, priceHistory: appendHist(m.s.priceHistory, m.np) });
       }
-      house -= totalDelta;
     }
     const entry = { text, polarity: applied ? polarity : 'flat', scope, badge, stockIds: targets.map((t) => t.id), at: Date.now() };
-    tx.set(boardRef, { news: [entry, ...news].slice(0, 50), housePool: house }, { merge: true });
+    // housePool 은 increment 로(틱과 충돌 방지). news 배열만 절대값 갱신.
+    tx.set(boardRef, { news: [entry, ...news].slice(0, 50), housePool: FieldValue.increment(applied ? -totalDelta : 0) }, { merge: true });
     tx.set(db.collection('ledger').doc(), { type: 'news', polarity, scope, label, applied, totalDelta: applied ? totalDelta : 0, ts: FieldValue.serverTimestamp() });
     return { text, polarity: entry.polarity, scope, targets: targets.length, applied, totalDelta: applied ? totalDelta : 0 };
   });

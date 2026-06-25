@@ -49,8 +49,12 @@ export function callable(name) {
     try { return await fn(data); }
     catch (e) {
       const code = String(e?.code || '');
-      if (/unauthenticated|internal|unauthorized|permission-denied/.test(code)) {
+      if (/unauthenticated|unauthorized|permission-denied/.test(code)) {
         const err = new Error('운영자 로그인이 만료된 것 같습니다. [계정]에서 Google로 다시 로그인 후 시도하세요.');
+        err.code = code; throw err;
+      }
+      if (/internal|unavailable|deadline/.test(code)) {
+        const err = new Error('일시적인 처리 오류입니다. 잠시 후 다시 시도해 주세요.');
         err.code = code; throw err;
       }
       throw e;

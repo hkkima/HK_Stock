@@ -158,13 +158,11 @@ export const payDividend = onCall(async (req) => {
   if (payouts.length === 0) throw new HttpsError('failed-precondition', '보유자가 없습니다.');
 
   await db.runTransaction(async (tx) => {
-    const bSnap = await tx.get(boardRef());
-    const house = bSnap.exists ? (bSnap.data().housePool || 0) : 0;
-    if (total > house) throw new HttpsError('failed-precondition', `하우스 풀 부족(필요 ${total}, 보유 ${house}). 먼저 발행하세요.`);
+    // board 는 읽지 않고 increment 로만 차감(시세 틱과 충돌 방지). 하우스 풀은 음수 허용.
     const uRefs = payouts.map((p) => db.doc(`users/${p.userId}`));
     const uSnaps = await Promise.all(uRefs.map((r) => tx.get(r)));
     uSnaps.forEach((s, i) => { if (s.exists) tx.update(uRefs[i], { balance: (s.data().balance || 0) + payouts[i].amt }); });
-    tx.set(boardRef(), { housePool: house - total }, { merge: true });
+    tx.set(boardRef(), { housePool: FieldValue.increment(-total) }, { merge: true });
     tx.set(db.collection('ledger').doc(), { stockId, type: 'dividend', perShare: ps, total, count: payouts.length, ts: FieldValue.serverTimestamp() });
   });
   return { stockId, perShare: ps, total, count: payouts.length };
@@ -179,7 +177,7 @@ export const adjustPrice = onCall(async (req) => {
 
   return db.runTransaction(async (tx) => {
     const sRef = db.doc(`stocks/${stockId}`);
-    const [sSnap, bSnap] = await Promise.all([tx.get(sRef), tx.get(boardRef())]);
+    const sSnap = await tx.get(sRef); // board 는 안 읽음(틱과 충돌 방지)
     if (!sSnap.exists) throw new HttpsError('not-found', '종목을 찾을 수 없습니다.');
     const s = sSnap.data();
     const circ = s.circulating || 0;
@@ -188,11 +186,9 @@ export const adjustPrice = onCall(async (req) => {
     const newBase = s.base + shift;
     if (newBase < 1) throw new HttpsError('failed-precondition', '시세를 그만큼 낮추면 곡선이 음수가 됩니다.');
     const delta = priceAdjustDelta(curPrice, np, circ);
-    const house = bSnap.exists ? (bSnap.data().housePool || 0) : 0;
-    if (delta > house) throw new HttpsError('failed-precondition', `상향 보조에 하우스 풀 부족(필요 ${delta}, 보유 ${house}).`);
     // 펀더멘탈 변경이므로 centerBase(평균회귀 중심)도 같이 이동 → 노이즈가 새 기준으로 수렴.
     tx.update(sRef, { base: newBase, centerBase: (s.centerBase ?? s.base) + shift, price: np, reserve: (s.reserve || 0) + delta, priceHistory: appendHist(s.priceHistory, np) });
-    tx.set(boardRef(), { housePool: house - delta }, { merge: true });
+    tx.set(boardRef(), { housePool: FieldValue.increment(-delta) }, { merge: true });
     tx.set(db.collection('ledger').doc(), { stockId, type: 'price_adjust', oldPrice: curPrice, newPrice: np, delta, memo: memo || '', ts: FieldValue.serverTimestamp() });
     return { stockId, oldPrice: curPrice, newPrice: np, delta };
   });
@@ -218,13 +214,9 @@ export const mintToHouse = onCall(async (req) => {
   const { amount, memo } = req.data || {};
   const amt = Math.floor(Number(amount));
   if (Number.isNaN(amt) || amt === 0) throw new HttpsError('invalid-argument', 'amount(0 아님)가 필요합니다.');
-  await db.runTransaction(async (tx) => {
-    const bSnap = await tx.get(boardRef());
-    const house = bSnap.exists ? (bSnap.data().housePool || 0) : 0;
-    if (house + amt < 0) throw new HttpsError('failed-precondition', '하우스 풀이 음수가 됩니다.');
-    tx.set(boardRef(), { housePool: house + amt }, { merge: true });
-    tx.set(db.collection('ledger').doc(), { type: amt >= 0 ? 'mint' : 'burn', delta: amt, memo: memo || '', ts: FieldValue.serverTimestamp() });
-  });
+  // ★ 원자 increment — 매분 시세 틱이 같은 문서를 갱신하므로 read-modify-write 트랜잭션은 충돌함.
+  await boardRef().set({ housePool: FieldValue.increment(amt) }, { merge: true });
+  await db.collection('ledger').add({ type: amt >= 0 ? 'mint' : 'burn', delta: amt, memo: memo || '', ts: FieldValue.serverTimestamp() });
   return { ok: true, amount: amt };
 });
 
