@@ -284,15 +284,13 @@ export const postNews = onCall(async (req) => {
   return { ok: true };
 });
 
-// ── 운영자: 영향 뉴스 — 작성 + 대상(종목/업종/테마) 시세 동시 조작 ─
+// ── 영향 뉴스 코어 — 작성 + 대상(종목/업종/테마) 시세 동시 조작 ─
 //   scope: all|stock|sector|trait, target: id/sector명/특성명, pct: 시세 ±%(0=효과없음).
-export const postImpactNews = onCall(async (req) => {
-  assertAdmin(req);
-  const { text, scope, target, pct } = req.data || {};
-  if (!text || !String(text).trim()) throw new HttpsError('invalid-argument', '내용이 필요합니다.');
+//   ★콜러블(postImpactNews)과 예약 발행(publishScheduledNews)이 공용 — 동작 동일.★
+//   text/scope/pct 는 호출 측에서 이미 검증된 값이어야 한다.
+async function applyImpactNews({ text, scope, target, pct }) {
   const sc = ['all', 'stock', 'sector', 'trait'].includes(scope) ? scope : 'all';
   const p = Number(pct) || 0;
-  if (p <= -100) throw new HttpsError('invalid-argument', 'pct는 -100 초과.');
 
   const ss = await db.collection('stocks').get();
   let stocks = ss.docs.map((d) => ({ ref: d.ref, id: d.id, ...d.data() }));
@@ -331,6 +329,69 @@ export const postImpactNews = onCall(async (req) => {
   });
   await db.collection('ledger').add({ type: 'impact_news', scope: sc, target: target || null, pct: p, count: stockIds.length, ts: FieldValue.serverTimestamp() });
   return { scope: sc, badge, pct: p, count: stockIds.length };
+}
+
+// ── 운영자: 영향 뉴스(즉시 게시) ────────────────────────────
+export const postImpactNews = onCall(async (req) => {
+  assertAdmin(req);
+  const { text, scope, target, pct } = req.data || {};
+  if (!text || !String(text).trim()) throw new HttpsError('invalid-argument', '내용이 필요합니다.');
+  const p = Number(pct) || 0;
+  if (p <= -100) throw new HttpsError('invalid-argument', 'pct는 -100 초과.');
+  return applyImpactNews({ text, scope, target, pct });
+});
+
+// ── 운영자: 뉴스 예약 — 지정 시각(publishAt, epoch ms)에 자동 발행 ─
+//   scope/pct 의미는 postImpactNews 와 동일(pct=0 이면 헤드라인만).
+export const scheduleNews = onCall(async (req) => {
+  assertAdmin(req);
+  const { text, scope, target, pct, publishAt } = req.data || {};
+  if (!text || !String(text).trim()) throw new HttpsError('invalid-argument', '내용이 필요합니다.');
+  const sc = ['all', 'stock', 'sector', 'trait'].includes(scope) ? scope : 'all';
+  const p = Number(pct) || 0;
+  if (p <= -100) throw new HttpsError('invalid-argument', 'pct는 -100 초과.');
+  if (sc !== 'all' && !String(target || '').trim()) throw new HttpsError('invalid-argument', '대상을 선택하세요.');
+  const when = Math.floor(Number(publishAt));
+  if (!Number.isFinite(when) || when <= 0) throw new HttpsError('invalid-argument', '게시 시각(publishAt)이 필요합니다.');
+  const ref = await db.collection('scheduledNews').add({
+    text: String(text).trim(), scope: sc, target: target || null, pct: p,
+    publishAt: when, status: 'pending',
+    createdBy: req.auth?.token?.email || null, createdAt: FieldValue.serverTimestamp(),
+  });
+  return { id: ref.id, publishAt: when };
+});
+
+// ── 운영자: 예약 뉴스 취소(대기 중인 것만) ───────────────────
+export const cancelScheduledNews = onCall(async (req) => {
+  assertAdmin(req);
+  const { id } = req.data || {};
+  if (!id) throw new HttpsError('invalid-argument', 'id가 필요합니다.');
+  const ref = db.doc(`scheduledNews/${id}`);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', '예약을 찾을 수 없습니다.');
+  if (snap.data().status !== 'pending') throw new HttpsError('failed-precondition', '이미 처리된 예약입니다.');
+  await ref.update({ status: 'cancelled', cancelledAt: FieldValue.serverTimestamp() });
+  return { id, cancelled: true };
+});
+
+// ── 자동: 매분 만기된 예약 뉴스 발행 ────────────────────────
+//   pending 만 단일 등가 쿼리(복합 인덱스 불필요)로 가져와 publishAt 을 코드에서 비교.
+export const publishScheduledNews = onSchedule({ schedule: '* * * * *', timeZone: 'Asia/Seoul' }, async () => {
+  const now = Date.now();
+  const due = await db.collection('scheduledNews').where('status', '==', 'pending').get();
+  for (const d of due.docs) {
+    const n = d.data();
+    if (!(Number(n.publishAt) <= now)) continue;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const r = await applyImpactNews({ text: n.text, scope: n.scope, target: n.target, pct: n.pct });
+      // eslint-disable-next-line no-await-in-loop
+      await d.ref.update({ status: 'published', publishedAt: FieldValue.serverTimestamp(), result: r });
+    } catch (e) {
+      // eslint-disable-next-line no-await-in-loop
+      await d.ref.update({ status: 'failed', error: String(e?.message || e), failedAt: FieldValue.serverTimestamp() });
+    }
+  }
 });
 
 // ── 운영자: 하우스 풀 발행/소각 (유일한 총량 변동) ─────────

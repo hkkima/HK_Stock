@@ -111,3 +111,19 @@ export async function marketReprice(pct) {
 export async function postImpactNews({ text, scope, target, pct }) {
   return (await callable('postImpactNews')({ text, scope, target, pct })).data;
 }
+
+// ── 예약 뉴스 ───────────────────────────────────────────
+export async function scheduleNews({ text, scope, target, pct, publishAt }) {
+  return (await callable('scheduleNews')({ text, scope, target, pct, publishAt })).data;
+}
+export async function cancelScheduledNews(id) {
+  return (await callable('cancelScheduledNews')({ id })).data;
+}
+// 예약 큐 구독 — 운영자만 읽기 가능(규칙). 비운영자가 호출하면 권한 오류 → 호출 측에서 admin 일 때만.
+export function subscribeScheduledNews(cb) {
+  return onSnapshot(
+    query(collection(getFirebase().db, 'scheduledNews'), orderBy('publishAt', 'asc')),
+    (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    () => cb([]),
+  );
+}

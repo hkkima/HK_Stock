@@ -66,6 +66,7 @@
 - **09:00 개장 / 18:00 마감**: 상태 전환, 분봉 초기화, 일봉(OHLC) 집계, 전일종가 저장.
 - **매 1분 시세 틱**: 종목별 평균회귀 노이즈.
 - **장중 랜덤 자동뉴스**: 30분 슬롯마다 확률 발동(≈2.5건/일), 토글 ON일 때만.
+- **예약 뉴스 발행**: 매분 만기된 예약(`scheduledNews`)을 자동 게시(종일). 운영자 ④에서 내용·대상·시세% + 시각 지정.
 
 ---
 
@@ -100,7 +101,9 @@ meta/stockBoard             { housePool, news[], autoNewsEnabled }
 | `adjustPrice` | 운영 | 시세 목표가 설정(곡선 평행이동, 총량보존) |
 | `marketReprice` | 운영 | **전체 종목 ±% 일괄 조정**(통합 디플레/인플레 레버) |
 | `postNews` | 운영 | (구) 텍스트 뉴스 |
-| `postImpactNews` | 운영 | **뉴스 작성 + 대상(전체/종목/업종/테마) 시세 동시 조작** |
+| `postImpactNews` | 운영 | **뉴스 작성 + 대상(전체/종목/업종/테마) 시세 동시 조작** (코어 `applyImpactNews` 공용) |
+| `scheduleNews` / `cancelScheduledNews` | 운영 | **뉴스 예약 등록 / 취소** (지정 시각 자동 발행) |
+| `publishScheduledNews` | 스케줄 | **매분 만기된 예약 뉴스 발행**(`applyImpactNews` 호출) |
 | `triggerNews` / `setAutoNews` | 운영 | 즉시 랜덤 뉴스 / 자동뉴스 토글 |
 | `mintToHouse` | 운영 | 하우스풀 발행/소각(유일한 총량 변동) |
 | `grantOption` | 운영 | 멤버에게 거래금지 자사주 발행(하우스풀 대납) |
@@ -240,4 +243,14 @@ test-harness/    서비스계정 키로 시드·검증(seed.mjs)
 - 시가총액: 발행주식수 기준.
 
 ---
-*최종 갱신: 2026-06-25. 함수 17개, 라이브 운영 중(수강생 24명·종목 14개).*
+### 9.8 까미 봇(외부 자동매매) — 앱 밖에 있음
+
+까미는 플레이어 중 하나라 **앱(HK_Stock) 안에 UI/Cloud Function 으로 두지 않는다.** 별도 폴더
+`C:\HK_Bot\kami-bot\`(독립 Node 스크립트)에서 서비스계정 키 + Admin SDK 로 거래한다.
+- 시세 수학은 `functions/market.js` 를 **그대로 import**(본전보장·중복구현 방지). 거래 트랜잭션은
+  `trade` 함수를 복제(현금 지갑↔리저브, housePool 불변, 총량 보존).
+- 전략: 뉴스 반응형 + 공격형(순자산 75% 투자) + 분할 매매. 상세·튜닝은 `kami-bot/README.md`.
+- ★실행 전 `node kami-bot.mjs --dry --once` 로 확인★. 실거래는 `node kami-bot.mjs`(장중 2분 루프).
+
+---
+*최종 갱신: 2026-06-26. 함수 20개(예약 뉴스 3종 추가), 라이브 운영 중. 까미 봇은 외부 스크립트(kami-bot/).*

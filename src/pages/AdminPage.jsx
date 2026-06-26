@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useApp } from '../state/AppContext.jsx';
-import { upsertStock, payDividend, adjustPrice, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice, postImpactNews } from '../data/store.js';
+import { upsertStock, payDividend, adjustPrice, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice, postImpactNews, scheduleNews, cancelScheduledNews } from '../data/store.js';
 
 function useAction() {
   const [busy, setBusy] = useState(false);
@@ -182,14 +182,18 @@ function Fundamentals() {
 }
 
 function NewsAndMint() {
-  const { stocks, stockBoard, traitsByStock } = useApp();
+  const { stocks, stockBoard, traitsByStock, scheduledNews } = useApp();
   const { busy, msg, run } = useAction();
-  const [imp, setImp] = useState({ text: '', scope: 'all', target: '', pct: 0 });
+  const [imp, setImp] = useState({ text: '', scope: 'all', target: '', pct: 0, publishAt: '' });
   const [mint, setMint] = useState({ amount: 10000, memo: '' });
   const autoOn = !!stockBoard?.autoNewsEnabled;
   const sectors = [...new Set(stocks.map((s) => s.sector).filter(Boolean))];
   const traits = [...new Set(Object.values(traitsByStock).flat())];
   const setI = (k) => (e) => setImp({ ...imp, [k]: e.target.value });
+  const targetOk = imp.scope === 'all' || !!imp.target;
+  const pending = (scheduledNews || []).filter((n) => n.status === 'pending');
+  const fmtWhen = (ms) => new Date(ms).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const scopeLabel = (n) => (n.scope === 'all' ? '전체' : n.scope === 'trait' ? '테마' : (n.target || n.scope));
   return (
     <div className="card">
       <h3>④ 뉴스 · 하우스 풀 발행</h3>
@@ -236,10 +240,36 @@ function NewsAndMint() {
       </div>
       <div className="row" style={{ marginTop: 8 }}>
         <input placeholder="뉴스 내용(헤드라인)" style={{ flex: 1, minWidth: 240 }} value={imp.text} onChange={setI('text')} />
-        <button className="primary" disabled={busy || !imp.text.trim() || (imp.scope !== 'all' && !imp.target)}
-          onClick={() => run(() => postImpactNews({ text: imp.text, scope: imp.scope, target: imp.target || null, pct: Number(imp.pct) }), (r) => `게시: ${r.count}종목 ${r.pct >= 0 ? '+' : ''}${r.pct}%`)}>게시</button>
+        <button className="primary" disabled={busy || !imp.text.trim() || !targetOk}
+          onClick={() => run(() => postImpactNews({ text: imp.text, scope: imp.scope, target: imp.target || null, pct: Number(imp.pct) }), (r) => `게시: ${r.count}종목 ${r.pct >= 0 ? '+' : ''}${r.pct}%`)}>지금 게시</button>
+      </div>
+      <div className="row" style={{ marginTop: 8 }}>
+        <label className="muted">예약 시각<input type="datetime-local" style={{ marginLeft: 4 }} value={imp.publishAt} onChange={setI('publishAt')} /></label>
+        <button className="ghost" disabled={busy || !imp.text.trim() || !targetOk || !imp.publishAt}
+          onClick={() => run(
+            () => scheduleNews({ text: imp.text, scope: imp.scope, target: imp.target || null, pct: Number(imp.pct), publishAt: new Date(imp.publishAt).getTime() }),
+            (r) => `예약 완료: ${fmtWhen(r.publishAt)}`,
+          )}>예약</button>
+        <span className="muted">위 내용·대상·시세%를 지정 시각에 자동 발행.</span>
       </div>
       <p className="muted">시세 %는 양수=호재(하우스 풀 충당)·음수=악재·0=헤드라인만. 업종/테마 선택 시 해당 종목 전체에 동반 적용.</p>
+
+      {pending.length > 0 && (
+        <table className="tbl" style={{ marginTop: 8 }}>
+          <thead><tr><th>예약 시각</th><th>대상</th><th className="num">시세%</th><th>내용</th><th></th></tr></thead>
+          <tbody>
+            {pending.map((n) => (
+              <tr key={n.id}>
+                <td className="mono">{fmtWhen(n.publishAt)}</td>
+                <td>{scopeLabel(n)}</td>
+                <td className="num mono">{n.pct >= 0 ? '+' : ''}{n.pct}%</td>
+                <td>{n.text}</td>
+                <td><button className="ghost danger" disabled={busy} onClick={() => run(() => cancelScheduledNews(n.id), () => '취소됨')}>취소</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
 
       <div className="section-title" style={{ marginTop: 16 }}>하우스 풀 발행/소각 — 유일한 총량 변동 경로(인플레 조절). 음수=소각.</div>
       <div className="row">
