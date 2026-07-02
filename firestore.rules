@@ -105,5 +105,20 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
+
+    // ── DP 교환소: 전부 읽기 전용, 쓰기는 Cloud Functions(Admin SDK)만 ─
+    //   DP는 게임 포인트(users.balance)와 별개 통화. meta/dpExchange 는 위 meta 규칙으로 커버.
+    match /dpAccounts/{userId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /dpGoods/{goodsId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /dpRedemptions/{redId} {
+      allow read: if true;   // 학급 투명성. 민감하면 본인+운영자로 좁힐 수 있음.
+      allow write: if false;
+    }
   }
 }

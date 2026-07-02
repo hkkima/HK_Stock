@@ -31,6 +31,7 @@ export default function App() {
           <button className={tab === 'news' ? 'active' : ''} onClick={() => setTab('news')}>뉴스</button>
           {isParticipant && <button className={tab === 'me' ? 'active' : ''} onClick={() => setTab('me')}>내 자산</button>}
           <button className={tab === 'rank' ? 'active' : ''} onClick={() => setTab('rank')}>리더보드</button>
+          <button onClick={() => window.open('https://hkkima.github.io/HK_DP/', '_blank', 'noopener')} title="DP를 현물 상품으로 교환">🎁 교환소</button>
           {isAdmin && <button className={tab === 'admin' ? 'active' : ''} onClick={() => setTab('admin')}>운영자</button>}
           <button className={tab === 'login' ? 'active' : ''} onClick={() => setTab('login')}>
             {session.role === 'guest' ? '로그인' : '계정'}

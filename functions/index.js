@@ -418,10 +418,16 @@ export const delistStock = onCall(async (req) => {
   const holders = [];
   hs.forEach((d) => { const h = d.data(); if ((h.shares || 0) > 0) holders.push({ userId: h.userId, shares: h.shares }); });
   const allHoldingRefs = hs.docs.map((d) => d.ref);
+  // 서브컬렉션은 부모 문서 delete 로 안 지워짐 → 고아 방지 위해 ref 사전 수집(트랜잭션 밖, 비원자적 읽기).
+  const candleRefs = (await db.collection(`stocks/${stockId}/candles`).get()).docs.map((d) => d.ref);
+  const seriesRef = db.doc(`stocks/${stockId}/series/intraday`);
+  // housePool 은 틱이 매분 increment 로 갱신 → 트랜잭션에서 read-modify-write 하면 충돌(internal)로 상폐가 롤백된다(불변식 #1).
+  // 부족분 검증만 사전 스냅으로 하고, 실제 정산은 increment 로 쓴다(boardRef 를 트랜잭션 읽기 집합에서 제외).
+  const houseBefore = ((await boardRef().get()).data()?.housePool) || 0;
 
   return db.runTransaction(async (tx) => {
     const sRef = db.doc(`stocks/${stockId}`);
-    const [sSnap, bSnap] = await Promise.all([tx.get(sRef), tx.get(boardRef())]);
+    const sSnap = await tx.get(sRef);
     if (!sSnap.exists) throw new HttpsError('not-found', '종목을 찾을 수 없습니다.');
     const s = sSnap.data();
     if (s.status === 'open') throw new HttpsError('failed-precondition', '거래를 먼저 닫은 뒤 상장폐지하세요.');
@@ -438,15 +444,16 @@ export const delistStock = onCall(async (req) => {
       if (pay > 0) tx.update(uRefs[i], { balance: (snap.data().balance || 0) + pay });
     });
 
-    const house = bSnap.exists ? (bSnap.data().housePool || 0) : 0;
-    const newHouse = house + (reserve - totalPayout);
-    if (newHouse < 0) throw new HttpsError('failed-precondition', `상폐 정산에 하우스 풀 부족(부족분 ${-newHouse}). 먼저 발행하거나 정산가를 낮추세요.`);
-    tx.set(boardRef(), { housePool: newHouse }, { merge: true });
+    const delta = reserve - totalPayout; // 리저브 회수 − 정산 지급. 하우스 풀로 증감(총량 보존).
+    if (houseBefore + delta < 0) throw new HttpsError('failed-precondition', `상폐 정산에 하우스 풀 부족(부족분 ${-(houseBefore + delta)}). 먼저 발행하거나 정산가를 낮추세요.`);
+    tx.set(boardRef(), { housePool: FieldValue.increment(delta) }, { merge: true });
 
     allHoldingRefs.forEach((r) => tx.delete(r));
+    tx.delete(seriesRef);
+    candleRefs.forEach((r) => tx.delete(r));
     tx.delete(sRef);
     tx.delete(db.doc(`stockTraits/${stockId}`));
-    tx.set(db.collection('ledger').doc(), { stockId, type: 'delist', settlePrice: price, totalPayout, reserveReturned: reserve - totalPayout, count: holders.length, ts: FieldValue.serverTimestamp() });
+    tx.set(db.collection('ledger').doc(), { stockId, type: 'delist', settlePrice: price, totalPayout, reserveReturned: delta, count: holders.length, ts: FieldValue.serverTimestamp() });
     return { stockId, settlePrice: price, totalPayout, count: holders.length };
   });
 });
