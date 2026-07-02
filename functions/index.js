@@ -422,9 +422,8 @@ export const delistStock = onCall(async (req) => {
   const candleRefs = (await db.collection(`stocks/${stockId}/candles`).get()).docs.map((d) => d.ref);
   const seriesRef = db.doc(`stocks/${stockId}/series/intraday`);
   // housePool 은 틱이 매분 increment 로 갱신 → 트랜잭션에서 read-modify-write 하면 충돌(internal)로 상폐가 롤백된다(불변식 #1).
-  // 부족분 검증만 사전 스냅으로 하고, 실제 정산은 increment 로 쓴다(boardRef 를 트랜잭션 읽기 집합에서 제외).
-  const houseBefore = ((await boardRef().get()).data()?.housePool) || 0;
-
+  //   정산은 increment 로만 쓴다(boardRef 를 트랜잭션 읽기 집합에서 제외). ★housePool 음수 허용(하우스 '빚')이라
+  //   '부족분' 가드는 두지 않는다 — 두면 하우스가 음수인 동안 어떤 종목도 상폐 불가(틱·배당·DP와 동일 정책).
   return db.runTransaction(async (tx) => {
     const sRef = db.doc(`stocks/${stockId}`);
     const sSnap = await tx.get(sRef);
@@ -444,8 +443,7 @@ export const delistStock = onCall(async (req) => {
       if (pay > 0) tx.update(uRefs[i], { balance: (snap.data().balance || 0) + pay });
     });
 
-    const delta = reserve - totalPayout; // 리저브 회수 − 정산 지급. 하우스 풀로 증감(총량 보존).
-    if (houseBefore + delta < 0) throw new HttpsError('failed-precondition', `상폐 정산에 하우스 풀 부족(부족분 ${-(houseBefore + delta)}). 먼저 발행하거나 정산가를 낮추세요.`);
+    const delta = reserve - totalPayout; // 리저브 회수 − 정산 지급. 하우스 풀로 증감(총량 보존, 음수 허용).
     tx.set(boardRef(), { housePool: FieldValue.increment(delta) }, { merge: true });
 
     allHoldingRefs.forEach((r) => tx.delete(r));
