@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useApp } from '../state/AppContext.jsx';
-import { upsertStock, payDividend, adjustPrice, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice, postImpactNews, scheduleNews, cancelScheduledNews } from '../data/store.js';
+import { upsertStock, payDividend, adjustPrice, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice, postImpactNews, scheduleNews, cancelScheduledNews, postInstructorEvent } from '../data/store.js';
+import { EVENT_CATEGORIES, EVENT_PRESETS, renderEventHeadline, eventCategoryMeta } from '../domain/events.js';
 
 function useAction() {
   const [busy, setBusy] = useState(false);
@@ -176,6 +177,119 @@ function Fundamentals() {
           시세 변경
         </button>
       </div>
+      <StatusMsg msg={msg} />
+    </div>
+  );
+}
+
+// ── 강사 이벤트 — 출결·과제·프로젝트 등 강사가 직접 주무르는 펀더멘탈 레버 ──
+//   자동 랜덤 뉴스와 분리. 프리셋 원클릭 → 팀 주가에 즉시 호재/악재 반영(동기부여·분위기).
+function InstructorEvents() {
+  const { stocks, stockBoard } = useApp();
+  const { busy, msg, run } = useAction();
+  const [stockId, setStockId] = useState('');
+  const [cat, setCat] = useState(EVENT_CATEGORIES[0].id);
+  const [sel, setSel] = useState(null); // 선택한 프리셋 key
+  const [text, setText] = useState('');
+  const [pct, setPct] = useState(0);
+  const [when, setWhen] = useState('');
+
+  const stock = stocks.find((s) => s.id === stockId);
+  const presets = EVENT_PRESETS.filter((p) => p.cat === cat);
+  const recent = (stockBoard?.news || []).filter((n) => n.kind === 'instructor').slice(0, 6);
+  const ready = !!stockId && !!text.trim();
+
+  const pickStock = (e) => { setStockId(e.target.value); setSel(null); setText(''); setPct(0); };
+  const applyPreset = (p) => {
+    setSel(p.key);
+    setText(renderEventHeadline(p, stock?.name || ''));
+    setPct(p.pct);
+  };
+  const clearSel = () => { setSel(null); setText(''); setPct(0); };
+
+  const post = () => run(
+    () => postInstructorEvent({ stockId, presetKey: sel, pct: Number(pct), text }),
+    (r) => `발행: ${stock?.name} ${r.pct >= 0 ? '+' : ''}${r.pct}%`,
+  );
+  const schedule = () => run(
+    () => scheduleNews({
+      text, scope: 'stock', target: stockId, pct: Number(pct),
+      publishAt: new Date(when).getTime(), kind: 'instructor',
+      category: (EVENT_PRESETS.find((p) => p.key === sel)?.cat) || 'custom',
+    }),
+    () => `예약 완료: ${new Date(when).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
+  );
+
+  return (
+    <div className="card">
+      <h3>📣 강사 이벤트 — 동기부여 · 분위기</h3>
+      <p className="muted" style={{ marginTop: 0 }}>
+        출결·과제·프로젝트 퀄리티 등 <b>강사가 직접 판단하는 활동</b>을 팀 주가에 바로 반영합니다.
+        프리셋을 누르면 헤드라인·기본 시세%가 채워지고, 수정 후 [발행]. 자동 랜덤 뉴스와 별개로 <b>📣강사</b> 뱃지로 표시됩니다.
+      </p>
+
+      <div className="row">
+        <select value={stockId} onChange={pickStock}>
+          <option value="">팀(종목) 선택</option>
+          {stocks.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        {stock && <span className="muted">현재가 <b className="mono">{(stock.price || 0).toLocaleString()}</b>P</span>}
+      </div>
+
+      <div className="evt-tabs" style={{ marginTop: 10 }}>
+        {EVENT_CATEGORIES.map((c) => (
+          <button key={c.id} className={`evt-tab${cat === c.id ? ' active' : ''}`} onClick={() => setCat(c.id)}>
+            {c.icon} {c.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="evt-chips" style={{ marginTop: 10 }}>
+        {presets.map((p) => (
+          <button
+            key={p.key}
+            className={`evt-chip ${p.pct >= 0 ? 'good' : 'bad'}${sel === p.key ? ' sel' : ''}`}
+            disabled={!stockId}
+            title={renderEventHeadline(p, stock?.name || '{기업}')}
+            onClick={() => applyPreset(p)}
+          >
+            {p.label} <span className="evt-pct">{p.pct >= 0 ? '+' : ''}{p.pct}%</span>
+          </button>
+        ))}
+      </div>
+      {!stockId && <p className="muted" style={{ marginTop: 6 }}>먼저 팀(종목)을 선택하세요.</p>}
+
+      <div className="row" style={{ marginTop: 10 }}>
+        <input placeholder="헤드라인(프리셋 선택 시 자동 입력·수정 가능)" style={{ flex: 1, minWidth: 260 }} value={text} onChange={(e) => setText(e.target.value)} />
+        <label className="muted">시세<input type="number" style={{ width: 64, marginLeft: 4 }} value={pct} onChange={(e) => setPct(e.target.value)} />%</label>
+        {sel && <button className="ghost" onClick={clearSel}>지우기</button>}
+      </div>
+
+      <div className="row" style={{ marginTop: 8 }}>
+        <button className="primary" disabled={busy || !ready} onClick={post}>지금 발행</button>
+        <label className="muted">예약<input type="datetime-local" style={{ marginLeft: 4 }} value={when} onChange={(e) => setWhen(e.target.value)} /></label>
+        <button className="ghost" disabled={busy || !ready || !when} onClick={schedule}>예약 발행</button>
+      </div>
+      <p className="muted">양수=호재(팀 주가↑·하우스 풀 충당)·음수=악재(↓)·0=헤드라인만. 시세 효과는 해당 팀 종목에만 적용됩니다.</p>
+
+      {recent.length > 0 && (
+        <>
+          <div className="section-title" style={{ marginTop: 14 }}>최근 강사 이벤트</div>
+          {recent.map((n, i) => {
+            const up = n.polarity === 'good'; const down = n.polarity === 'bad';
+            const meta = eventCategoryMeta(n.category);
+            return (
+              <div className="news-item" key={i}>
+                <span className="evt-badge">📣 {meta.label}</span>
+                {(up || down) && <span className={up ? 'up' : 'down'} style={{ fontWeight: 700, marginRight: 4 }}>{up ? '▲' : '▼'}</span>}
+                {n.badge && <span className="co-tag" style={{ marginRight: 6 }}>{n.badge}</span>}
+                {n.text}
+                <span className="when"> · {new Date(n.at).toLocaleString('ko-KR')}</span>
+              </div>
+            );
+          })}
+        </>
+      )}
       <StatusMsg msg={msg} />
     </div>
   );
@@ -391,6 +505,7 @@ export default function AdminPage() {
       <NewStock />
       <StockList />
       <Fundamentals />
+      <InstructorEvents />
       <MembersOptions />
       <NewsAndMint />
     </div>
