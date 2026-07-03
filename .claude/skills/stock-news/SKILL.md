@@ -8,6 +8,10 @@ description: HK_Stock 수강생 주식판의 뉴스 헤드라인을 보충 생�
 수강생 가상 주식판(HK_Stock)의 재미를 위해 **테마주 뉴스 헤드라인**을 추가로 만든다.
 자동 뉴스 엔진(`functions/news.js`)의 내장 템플릿을 보충하거나, 특정 이벤트용 뉴스를 생성한다.
 
+> **서사 있는 강사 뉴스를 운영하려면 뉴스 파이프라인을 쓰라** — `docs/news/README.md`.
+> 이 스킬은 자동엔진 TPL 보충·일회성 헤드라인용(가벼운 용도)이고, 컨셉→시나리오→풀→예약의
+> 지속 서사는 `/stock-news-scenario` → `/stock-news-write` → `/stock-news-schedule` 3종을 쓴다.
+
 ## 1) 맥락 먼저 파악
 1. 현재 상장 종목·업종·특성을 확인한다.
    - 서비스 계정 키가 있으면 `test-harness` 패턴(firebase-admin)으로 `stocks`(name, sector) + `stockTraits`(traits)를 읽는다.

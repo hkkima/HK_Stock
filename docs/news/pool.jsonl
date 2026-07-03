@@ -1,0 +1,16 @@
+{"id":"chess-001","scenario":"chess-cult","scope":"stock","target":"300502","pct":3,"polarity":"good","status":"draft","text":"[특보] 체스의 신, 3호 지부 개설… 회원 폭증 - 김민철 기자","notes":"세뇌 아크 2단(지부 확장). 완만한 우상향 시작"}
+{"id":"chess-002","scenario":"chess-cult","scope":"stock","target":"300502","pct":4,"polarity":"good","status":"draft","text":"[단독] 체스의 신 '갬빗 클래스', 전국구로 - 김민철 기자","notes":"세뇌 아크 3단(전국 확산). 찬양 톤=사이비 암시"}
+{"id":"kami-001","scenario":"kami-holdings","scope":"stock","target":"500104","pct":3,"polarity":"good","status":"draft","text":"까미홀딩스, 계열 까미스트리밍과 전문분야 버튜버 콜라보 확대","notes":"A 시너지. 하우스풀 마이너스 고려 Tier2 하단"}
+{"id":"kami-002","scenario":"kami-holdings","scope":"stock","target":"500104","pct":5,"polarity":"good","status":"draft","text":"까미홀딩스, 외부 스타트업 첫 인수설… '생태계' 실행 단계","notes":"B 외부유치. 저빈도 강호재. 하우스풀 여력 볼 것"}
+{"id":"kami-003","scenario":"kami-holdings","scope":"stock","target":"500104","pct":-5,"polarity":"bad","status":"draft","text":"까미홀딩스 문어발 확장에 당국 점검설… 견제 국면","notes":"C 견제. 하우스풀 회복용 교정 브랜치 — 우선 배치 권장"}
+{"id":"market-001","scenario":"market-wide","scope":"all","target":null,"pct":0,"polarity":"flat","status":"draft","text":"까미홀딩스發 '생태계' 발언에 시장 전반 관망세","notes":"대형 이벤트 시장 반응 헤드라인만"}
+{"id":"tile-001","scenario":"tile-art","scope":"stock","target":"300504","pct":0,"polarity":"flat","status":"draft","text":"하늘타일공사, '타일모자이크 아트페어' 개최 선언","notes":"예술 아크 1단(선언). 시세 미반영"}
+{"id":"tile-002","scenario":"tile-art","scope":"stock","target":"300504","pct":0,"polarity":"flat","status":"draft","text":"'본업이나 잘하라' vs '신선'… 하늘타일공사 화제 양분","notes":"예술 아크 2단(반응 갈림). 시세 미반영"}
+{"id":"tile-003a","scenario":"tile-art","scope":"stock","target":"300504","pct":3,"polarity":"good","status":"draft","text":"하늘타일공사, 타일아트 전시 완판 흥행","notes":"예술 아크 3단 성공 분기(택1)"}
+{"id":"tile-003b","scenario":"tile-art","scope":"stock","target":"300504","pct":-3,"polarity":"bad","status":"draft","text":"하늘타일공사, 예술사업 적자에도 뚝심 투자 지속","notes":"예술 아크 3단 실패 분기(택1)"}
+{"id":"weed-001","scenario":"weed-innuendo","scope":"stock","target":"300505","pct":-3,"polarity":"bad","status":"draft","text":"WEED HOLDINGS, 남미발 '특수화물' 통관서 발목","notes":"은근 암시. '무엇'은 말 안 함"}
+{"id":"weed-002","scenario":"weed-innuendo","scope":"stock","target":"300505","pct":4,"polarity":"good","status":"draft","text":"WEED HOLDINGS, 월드컵 특수 물동량 폭증에 즐거운 비명","notes":"은근 암시. 물동량만 강조"}
+{"id":"ubi-001","scenario":"ubi-peach","scope":"stock","target":"300508","pct":3,"polarity":"good","status":"draft","text":"유비 소프트, 신메뉴 '어쌔신 피치드' 완판 행렬","notes":"어쌔신 크리드 패러디 + 복숭아"}
+{"id":"ubi-002","scenario":"ubi-peach","scope":"stock","target":"300508","pct":4,"polarity":"good","status":"draft","text":"유비 소프트, '파크라이 빙수' 여름 성수기 대박","notes":"파크라이 패러디 + 성수기"}
+{"id":"rkt-001","scenario":"rocketbit-gamble","scope":"stock","target":"300506","pct":5,"polarity":"good","status":"draft","text":"로켓비트 '일일 무당 트레이딩', 입소문 타고 대성공","notes":"도박성 리딩 호재. 구설수 왕복의 상승 국면"}
+{"id":"rkt-002","scenario":"rocketbit-gamble","scope":"stock","target":"300506","pct":-4,"polarity":"bad","status":"draft","text":"로켓비트 고객 '무당 리딩 믿었다 손실' 후기 확산","notes":"구설수 왕복의 하락 국면"}
