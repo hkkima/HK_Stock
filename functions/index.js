@@ -11,6 +11,7 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { quoteBuy, quoteSell, nextAvgCost, priceAdjustDelta } from './market.js';
 import { generateNews, NEWS_TICK_PROB } from './news.js';
 import { applyTick } from './tick.js';
+import { findEventPreset, renderEventHeadline } from './events.js';
 
 // ★ 프론트 VITE_FUNCTIONS_REGION 과 일치(서울 리전) ★
 setGlobalOptions({ region: 'asia-northeast3' });
@@ -286,9 +287,10 @@ export const postNews = onCall(async (req) => {
 
 // ── 영향 뉴스 코어 — 작성 + 대상(종목/업종/테마) 시세 동시 조작 ─
 //   scope: all|stock|sector|trait, target: id/sector명/특성명, pct: 시세 ±%(0=효과없음).
-//   ★콜러블(postImpactNews)과 예약 발행(publishScheduledNews)이 공용 — 동작 동일.★
+//   ★콜러블(postImpactNews)·예약(publishScheduledNews)·강사이벤트(postInstructorEvent) 공용 — 동작 동일.★
 //   text/scope/pct 는 호출 측에서 이미 검증된 값이어야 한다.
-async function applyImpactNews({ text, scope, target, pct }) {
+//   kind/category: 선택 태그(예: 강사 이벤트 kind:'instructor', category:'attendance') → 뉴스 피드 뱃지용.
+async function applyImpactNews({ text, scope, target, pct, kind, category }) {
   const sc = ['all', 'stock', 'sector', 'trait'].includes(scope) ? scope : 'all';
   const p = Number(pct) || 0;
 
@@ -325,9 +327,11 @@ async function applyImpactNews({ text, scope, target, pct }) {
     const bSnap = await tx.get(boardRef());
     const news = (bSnap.exists && Array.isArray(bSnap.data().news)) ? bSnap.data().news : [];
     const entry = { text: String(text).trim(), polarity, scope: sc, badge, stockIds, at: Date.now() };
+    if (kind) entry.kind = String(kind); // 예: 'instructor'
+    if (category) entry.category = String(category); // 예: 'attendance'
     tx.set(boardRef(), { news: [entry, ...news].slice(0, 50) }, { merge: true });
   });
-  await db.collection('ledger').add({ type: 'impact_news', scope: sc, target: target || null, pct: p, count: stockIds.length, ts: FieldValue.serverTimestamp() });
+  await db.collection('ledger').add({ type: kind === 'instructor' ? 'instructor_event' : 'impact_news', scope: sc, target: target || null, pct: p, category: category || null, count: stockIds.length, ts: FieldValue.serverTimestamp() });
   return { scope: sc, badge, pct: p, count: stockIds.length };
 }
 
@@ -341,11 +345,59 @@ export const postImpactNews = onCall(async (req) => {
   return applyImpactNews({ text, scope, target, pct });
 });
 
+// 강사 이벤트 1건 해석·적용(콜러블·일괄 공용). 프리셋(events.js)으로 헤드라인·기본 시세%를 채우거나
+//   text/pct 로 직접 지정. 항상 scope:'stock', kind:'instructor' 로 태깅. 잘못된 입력은 HttpsError.
+async function runInstructorEvent({ stockId, presetKey, pct, text }) {
+  if (!stockId) throw new HttpsError('invalid-argument', 'stockId가 필요합니다.');
+  const preset = presetKey ? findEventPreset(presetKey) : null;
+  if (presetKey && !preset) throw new HttpsError('invalid-argument', '알 수 없는 이벤트입니다.');
+
+  const sSnap = await db.doc(`stocks/${stockId}`).get();
+  if (!sSnap.exists) throw new HttpsError('not-found', '종목을 찾을 수 없습니다.');
+  const name = sSnap.data().name || stockId;
+
+  const body = (text && String(text).trim()) ? String(text).trim() : renderEventHeadline(preset, name);
+  if (!body) throw new HttpsError('invalid-argument', '프리셋 또는 내용이 필요합니다.');
+
+  const p = pct != null && pct !== '' ? Number(pct) : (preset ? preset.pct : 0);
+  if (!Number.isFinite(p) || p <= -100) throw new HttpsError('invalid-argument', 'pct는 -100 초과 숫자.');
+
+  const r = await applyImpactNews({ text: body, scope: 'stock', target: stockId, pct: p, kind: 'instructor', category: preset?.cat || 'custom' });
+  return { ...r, stockId, name };
+}
+
+// ── 운영자: 강사 이벤트(출결·과제·프로젝트 등) — 특정 종목에 즉시 게시 ─
+//   자동 랜덤 뉴스와 분리된 별도 레버.
+export const postInstructorEvent = onCall(async (req) => {
+  assertAdmin(req);
+  return runInstructorEvent(req.data || {});
+});
+
+// ── 운영자: 강사 이벤트 일괄 발행(주간 출결/평가 등) ─────────
+//   items: [{ stockId, presetKey?, pct?, text? }]. 항목별 best-effort — 실패는 건너뛰고 요약 반환.
+export const postInstructorEventsBatch = onCall(async (req) => {
+  assertAdmin(req);
+  const items = Array.isArray(req.data?.items) ? req.data.items : [];
+  if (items.length === 0) throw new HttpsError('invalid-argument', '발행할 항목이 없습니다.');
+  if (items.length > 100) throw new HttpsError('invalid-argument', '한 번에 최대 100건.');
+  const ok = []; const failed = [];
+  for (const it of items) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const r = await runInstructorEvent(it || {});
+      ok.push({ stockId: r.stockId, name: r.name, pct: r.pct });
+    } catch (e) {
+      failed.push({ stockId: it?.stockId || null, error: String(e?.message || e) });
+    }
+  }
+  return { count: ok.length, failed: failed.length, ok, failedItems: failed };
+});
+
 // ── 운영자: 뉴스 예약 — 지정 시각(publishAt, epoch ms)에 자동 발행 ─
 //   scope/pct 의미는 postImpactNews 와 동일(pct=0 이면 헤드라인만).
 export const scheduleNews = onCall(async (req) => {
   assertAdmin(req);
-  const { text, scope, target, pct, publishAt } = req.data || {};
+  const { text, scope, target, pct, publishAt, kind, category } = req.data || {};
   if (!text || !String(text).trim()) throw new HttpsError('invalid-argument', '내용이 필요합니다.');
   const sc = ['all', 'stock', 'sector', 'trait'].includes(scope) ? scope : 'all';
   const p = Number(pct) || 0;
@@ -355,6 +407,7 @@ export const scheduleNews = onCall(async (req) => {
   if (!Number.isFinite(when) || when <= 0) throw new HttpsError('invalid-argument', '게시 시각(publishAt)이 필요합니다.');
   const ref = await db.collection('scheduledNews').add({
     text: String(text).trim(), scope: sc, target: target || null, pct: p,
+    kind: kind ? String(kind) : null, category: category ? String(category) : null,
     publishAt: when, status: 'pending',
     createdBy: req.auth?.token?.email || null, createdAt: FieldValue.serverTimestamp(),
   });
@@ -384,7 +437,7 @@ export const publishScheduledNews = onSchedule({ schedule: '* * * * *', timeZone
     if (!(Number(n.publishAt) <= now)) continue;
     try {
       // eslint-disable-next-line no-await-in-loop
-      const r = await applyImpactNews({ text: n.text, scope: n.scope, target: n.target, pct: n.pct });
+      const r = await applyImpactNews({ text: n.text, scope: n.scope, target: n.target, pct: n.pct, kind: n.kind, category: n.category });
       // eslint-disable-next-line no-await-in-loop
       await d.ref.update({ status: 'published', publishedAt: FieldValue.serverTimestamp(), result: r });
     } catch (e) {

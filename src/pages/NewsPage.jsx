@@ -12,6 +12,7 @@ export default function NewsPage() {
           const up = n.polarity === 'good'; const down = n.polarity === 'bad';
           return (
             <div className="news-item" key={i}>
+              {n.kind === 'instructor' && <span className="evt-badge">📣 강사</span>}
               {(up || down) && <span className={up ? 'up' : 'down'} style={{ fontWeight: 700, marginRight: 6 }}>{up ? '▲' : '▼'}</span>}
               {n.badge && <span className="co-tag" style={{ marginRight: 6 }}>{n.badge}</span>}
               {n.text}

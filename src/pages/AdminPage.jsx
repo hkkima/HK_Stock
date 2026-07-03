@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../state/AppContext.jsx';
-import { upsertStock, payDividend, adjustPrice, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice, postImpactNews, scheduleNews, cancelScheduledNews } from '../data/store.js';
+import { upsertStock, payDividend, adjustPrice, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice, postImpactNews, scheduleNews, cancelScheduledNews, postInstructorEvent, postInstructorEventsBatch, getInstructorEventLog } from '../data/store.js';
+import { EVENT_CATEGORIES, EVENT_PRESETS, renderEventHeadline, eventCategoryMeta } from '../domain/events.js';
 
 function useAction() {
   const [busy, setBusy] = useState(false);
@@ -177,6 +178,239 @@ function Fundamentals() {
         </button>
       </div>
       <StatusMsg msg={msg} />
+    </div>
+  );
+}
+
+// ── 강사 이벤트 — 출결·과제·프로젝트 등 강사가 직접 주무르는 펀더멘탈 레버 ──
+//   자동 랜덤 뉴스와 분리. 프리셋 원클릭 → 팀 주가에 즉시 호재/악재 반영(동기부여·분위기).
+function InstructorEvents() {
+  const { stocks, stockBoard } = useApp();
+  const { busy, msg, run } = useAction();
+  const [stockId, setStockId] = useState('');
+  const [cat, setCat] = useState(EVENT_CATEGORIES[0].id);
+  const [sel, setSel] = useState(null); // 선택한 프리셋 key
+  const [text, setText] = useState('');
+  const [pct, setPct] = useState(0);
+  const [when, setWhen] = useState('');
+
+  const stock = stocks.find((s) => s.id === stockId);
+  const presets = EVENT_PRESETS.filter((p) => p.cat === cat);
+  const recent = (stockBoard?.news || []).filter((n) => n.kind === 'instructor').slice(0, 6);
+  const ready = !!stockId && !!text.trim();
+
+  const pickStock = (e) => { setStockId(e.target.value); setSel(null); setText(''); setPct(0); };
+  const applyPreset = (p) => {
+    setSel(p.key);
+    setText(renderEventHeadline(p, stock?.name || ''));
+    setPct(p.pct);
+  };
+  const clearSel = () => { setSel(null); setText(''); setPct(0); };
+
+  const post = () => run(
+    () => postInstructorEvent({ stockId, presetKey: sel, pct: Number(pct), text }),
+    (r) => `발행: ${stock?.name} ${r.pct >= 0 ? '+' : ''}${r.pct}%`,
+  );
+  const schedule = () => run(
+    () => scheduleNews({
+      text, scope: 'stock', target: stockId, pct: Number(pct),
+      publishAt: new Date(when).getTime(), kind: 'instructor',
+      category: (EVENT_PRESETS.find((p) => p.key === sel)?.cat) || 'custom',
+    }),
+    () => `예약 완료: ${new Date(when).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
+  );
+
+  return (
+    <div className="card">
+      <h3>📣 강사 이벤트 — 동기부여 · 분위기</h3>
+      <p className="muted" style={{ marginTop: 0 }}>
+        출결·과제·프로젝트 퀄리티 등 <b>강사가 직접 판단하는 활동</b>을 팀 주가에 바로 반영합니다.
+        프리셋을 누르면 헤드라인·기본 시세%가 채워지고, 수정 후 [발행]. 자동 랜덤 뉴스와 별개로 <b>📣강사</b> 뱃지로 표시됩니다.
+      </p>
+
+      <div className="row">
+        <select value={stockId} onChange={pickStock}>
+          <option value="">팀(종목) 선택</option>
+          {stocks.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        {stock && <span className="muted">현재가 <b className="mono">{(stock.price || 0).toLocaleString()}</b>P</span>}
+      </div>
+
+      <div className="evt-tabs" style={{ marginTop: 10 }}>
+        {EVENT_CATEGORIES.map((c) => (
+          <button key={c.id} className={`evt-tab${cat === c.id ? ' active' : ''}`} onClick={() => setCat(c.id)}>
+            {c.icon} {c.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="evt-chips" style={{ marginTop: 10 }}>
+        {presets.map((p) => (
+          <button
+            key={p.key}
+            className={`evt-chip ${p.pct >= 0 ? 'good' : 'bad'}${sel === p.key ? ' sel' : ''}`}
+            disabled={!stockId}
+            title={renderEventHeadline(p, stock?.name || '{기업}')}
+            onClick={() => applyPreset(p)}
+          >
+            {p.label} <span className="evt-pct">{p.pct >= 0 ? '+' : ''}{p.pct}%</span>
+          </button>
+        ))}
+      </div>
+      {!stockId && <p className="muted" style={{ marginTop: 6 }}>먼저 팀(종목)을 선택하세요.</p>}
+
+      <div className="row" style={{ marginTop: 10 }}>
+        <input placeholder="헤드라인(프리셋 선택 시 자동 입력·수정 가능)" style={{ flex: 1, minWidth: 260 }} value={text} onChange={(e) => setText(e.target.value)} />
+        <label className="muted">시세<input type="number" style={{ width: 64, marginLeft: 4 }} value={pct} onChange={(e) => setPct(e.target.value)} />%</label>
+        {sel && <button className="ghost" onClick={clearSel}>지우기</button>}
+      </div>
+
+      <div className="row" style={{ marginTop: 8 }}>
+        <button className="primary" disabled={busy || !ready} onClick={post}>지금 발행</button>
+        <label className="muted">예약<input type="datetime-local" style={{ marginLeft: 4 }} value={when} onChange={(e) => setWhen(e.target.value)} /></label>
+        <button className="ghost" disabled={busy || !ready || !when} onClick={schedule}>예약 발행</button>
+      </div>
+      <p className="muted">양수=호재(팀 주가↑·하우스 풀 충당)·음수=악재(↓)·0=헤드라인만. 시세 효과는 해당 팀 종목에만 적용됩니다.</p>
+
+      {recent.length > 0 && (
+        <>
+          <div className="section-title" style={{ marginTop: 14 }}>최근 강사 이벤트</div>
+          {recent.map((n, i) => {
+            const up = n.polarity === 'good'; const down = n.polarity === 'bad';
+            const meta = eventCategoryMeta(n.category);
+            return (
+              <div className="news-item" key={i}>
+                <span className="evt-badge">📣 {meta.label}</span>
+                {(up || down) && <span className={up ? 'up' : 'down'} style={{ fontWeight: 700, marginRight: 4 }}>{up ? '▲' : '▼'}</span>}
+                {n.badge && <span className="co-tag" style={{ marginRight: 6 }}>{n.badge}</span>}
+                {n.text}
+                <span className="when"> · {new Date(n.at).toLocaleString('ko-KR')}</span>
+              </div>
+            );
+          })}
+        </>
+      )}
+      <StatusMsg msg={msg} />
+    </div>
+  );
+}
+
+// ── 주간 일괄 출결/평가 — 한 카테고리를 여러 팀에 한 번에 발행 ──
+function WeeklyBatch() {
+  const { stocks } = useApp();
+  const { busy, msg, run } = useAction();
+  const [cat, setCat] = useState('attendance');
+  const [rows, setRows] = useState({}); // { [stockId]: presetKey | '' }
+
+  const presets = EVENT_PRESETS.filter((p) => p.cat === cat);
+  const setRow = (id, key) => setRows({ ...rows, [id]: key });
+  const items = stocks.filter((s) => rows[s.id]).map((s) => ({ stockId: s.id, presetKey: rows[s.id] }));
+  const changeCat = (id) => { setCat(id); setRows({}); };
+  const catMeta = eventCategoryMeta(cat);
+
+  const submit = () => run(
+    () => postInstructorEventsBatch(items),
+    (r) => `일괄 발행: ${r.count}팀${r.failed ? ` · 실패 ${r.failed}` : ''}`,
+  );
+
+  return (
+    <div className="card">
+      <h3>🗓 주간 일괄 출결 · 평가</h3>
+      <p className="muted" style={{ marginTop: 0 }}>
+        한 카테고리를 <b>여러 팀에 한 번에</b> 발행합니다. 팀별 결과를 고르고(없으면 건너뜀) [일괄 발행].
+        각 팀 주가에 즉시 반영되고 <b>📣강사</b>로 기록됩니다.
+      </p>
+      <div className="evt-tabs">
+        {EVENT_CATEGORIES.map((c) => (
+          <button key={c.id} className={`evt-tab${cat === c.id ? ' active' : ''}`} onClick={() => changeCat(c.id)}>
+            {c.icon} {c.label}
+          </button>
+        ))}
+      </div>
+      <table className="tbl" style={{ marginTop: 10 }}>
+        <thead><tr><th>팀</th><th className="num">현재가</th><th>{catMeta.label} 결과</th></tr></thead>
+        <tbody>
+          {stocks.map((s) => (
+            <tr key={s.id}>
+              <td>{s.name} <span className="muted">{s.team}</span></td>
+              <td className="num mono">{(s.price || 0).toLocaleString()}</td>
+              <td>
+                <select value={rows[s.id] || ''} onChange={(e) => setRow(s.id, e.target.value)}>
+                  <option value="">건너뜀</option>
+                  {presets.map((p) => <option key={p.key} value={p.key}>{p.label} ({p.pct >= 0 ? '+' : ''}{p.pct}%)</option>)}
+                </select>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="row" style={{ marginTop: 8 }}>
+        <button className="primary" disabled={busy || items.length === 0} onClick={submit}>일괄 발행 ({items.length}팀)</button>
+        {items.length > 0 && <button className="ghost" disabled={busy} onClick={() => setRows({})}>초기화</button>}
+      </div>
+      <StatusMsg msg={msg} />
+    </div>
+  );
+}
+
+// ── 팀별 강사 이벤트 대시보드(공정성·가시성) — ledger 집계, 읽기 전용 ──
+function InstructorDashboard() {
+  const { stocks } = useApp();
+  const [log, setLog] = useState(null);
+  const [days, setDays] = useState(7); // 7=이번 주, 0=전체
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try { setLog(await getInstructorEventLog()); }
+    catch (e) { setErr(e.message || '불러오기 실패'); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const nameById = Object.fromEntries(stocks.map((s) => [s.id, s.name]));
+  const cutoff = days > 0 ? Date.now() - days * 86400000 : 0;
+  const entries = (log || []).filter((e) => !cutoff || (e.at && e.at >= cutoff));
+
+  const agg = {};
+  for (const e of entries) {
+    const a = (agg[e.stockId] ||= { good: 0, bad: 0, flat: 0, net: 0 });
+    if (e.pct > 0) a.good += 1; else if (e.pct < 0) a.bad += 1; else a.flat += 1;
+    a.net += e.pct;
+  }
+  const rows = Object.entries(agg)
+    .map(([id, a]) => ({ id, name: nameById[id] || id, ...a }))
+    .sort((x, y) => y.net - x.net);
+
+  return (
+    <div className="card">
+      <h3>📊 팀별 강사 이벤트 (공정성 점검)</h3>
+      <div className="row">
+        <button className={`evt-tab${days === 7 ? ' active' : ''}`} onClick={() => setDays(7)}>이번 주(7일)</button>
+        <button className={`evt-tab${days === 0 ? ' active' : ''}`} onClick={() => setDays(0)}>전체</button>
+        <button className="ghost" disabled={loading} onClick={load}>{loading ? '…' : '새로고침'}</button>
+      </div>
+      {err && <p className="err">{err}</p>}
+      {rows.length === 0 ? (
+        <p className="muted" style={{ marginTop: 8 }}>{loading ? '불러오는 중…' : '해당 기간 강사 이벤트가 없습니다.'}</p>
+      ) : (
+        <table className="tbl" style={{ marginTop: 8 }}>
+          <thead><tr><th>팀</th><th className="num">호재</th><th className="num">악재</th><th className="num">중립</th><th className="num">순 %합</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td>{r.name}</td>
+                <td className="num mono up">{r.good || ''}</td>
+                <td className="num mono down">{r.bad || ''}</td>
+                <td className="num mono muted">{r.flat || ''}</td>
+                <td className={`num mono ${r.net > 0 ? 'up' : r.net < 0 ? 'down' : ''}`}>{r.net > 0 ? '+' : ''}{r.net}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="muted">순 %합 = 발행한 시세%의 누적(대략적 편중 지표). 한 팀에 호재/악재가 쏠렸는지 확인해 균형을 맞추세요. (ledger 집계 · 비실시간)</p>
     </div>
   );
 }
@@ -391,6 +625,9 @@ export default function AdminPage() {
       <NewStock />
       <StockList />
       <Fundamentals />
+      <InstructorEvents />
+      <WeeklyBatch />
+      <InstructorDashboard />
       <MembersOptions />
       <NewsAndMint />
     </div>

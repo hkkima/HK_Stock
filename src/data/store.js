@@ -111,10 +111,29 @@ export async function marketReprice(pct) {
 export async function postImpactNews({ text, scope, target, pct }) {
   return (await callable('postImpactNews')({ text, scope, target, pct })).data;
 }
+// 강사 이벤트(출결·과제·프로젝트 등) — 특정 종목에 즉시 게시(kind:'instructor' 태깅).
+export async function postInstructorEvent({ stockId, presetKey, pct, text }) {
+  return (await callable('postInstructorEvent')({ stockId, presetKey, pct, text })).data;
+}
+// 강사 이벤트 일괄 발행(주간 출결/평가). items: [{ stockId, presetKey?, pct?, text? }].
+export async function postInstructorEventsBatch(items) {
+  return (await callable('postInstructorEventsBatch')({ items })).data;
+}
+// 강사 이벤트 감사 로그 — ledger(공개 read)에서 type:'instructor_event' 만 조회(대시보드용, 비실시간).
+export async function getInstructorEventLog() {
+  const { db } = getFirebase();
+  const q = query(collection(db, 'ledger'), where('type', '==', 'instructor_event'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => {
+    const x = d.data();
+    const ms = x.ts && typeof x.ts.toMillis === 'function' ? x.ts.toMillis() : null;
+    return { stockId: x.target || null, pct: Number(x.pct) || 0, category: x.category || null, at: ms };
+  });
+}
 
 // ── 예약 뉴스 ───────────────────────────────────────────
-export async function scheduleNews({ text, scope, target, pct, publishAt }) {
-  return (await callable('scheduleNews')({ text, scope, target, pct, publishAt })).data;
+export async function scheduleNews({ text, scope, target, pct, publishAt, kind, category }) {
+  return (await callable('scheduleNews')({ text, scope, target, pct, publishAt, kind, category })).data;
 }
 export async function cancelScheduledNews(id) {
   return (await callable('cancelScheduledNews')({ id })).data;
