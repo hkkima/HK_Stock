@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../state/AppContext.jsx';
-import { upsertStock, payDividend, adjustPrice, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice, postImpactNews, scheduleNews, cancelScheduledNews, postInstructorEvent } from '../data/store.js';
+import { upsertStock, payDividend, adjustPrice, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice, postImpactNews, scheduleNews, cancelScheduledNews, postInstructorEvent, postInstructorEventsBatch, getInstructorEventLog } from '../data/store.js';
 import { EVENT_CATEGORIES, EVENT_PRESETS, renderEventHeadline, eventCategoryMeta } from '../domain/events.js';
 
 function useAction() {
@@ -295,6 +295,126 @@ function InstructorEvents() {
   );
 }
 
+// ── 주간 일괄 출결/평가 — 한 카테고리를 여러 팀에 한 번에 발행 ──
+function WeeklyBatch() {
+  const { stocks } = useApp();
+  const { busy, msg, run } = useAction();
+  const [cat, setCat] = useState('attendance');
+  const [rows, setRows] = useState({}); // { [stockId]: presetKey | '' }
+
+  const presets = EVENT_PRESETS.filter((p) => p.cat === cat);
+  const setRow = (id, key) => setRows({ ...rows, [id]: key });
+  const items = stocks.filter((s) => rows[s.id]).map((s) => ({ stockId: s.id, presetKey: rows[s.id] }));
+  const changeCat = (id) => { setCat(id); setRows({}); };
+  const catMeta = eventCategoryMeta(cat);
+
+  const submit = () => run(
+    () => postInstructorEventsBatch(items),
+    (r) => `일괄 발행: ${r.count}팀${r.failed ? ` · 실패 ${r.failed}` : ''}`,
+  );
+
+  return (
+    <div className="card">
+      <h3>🗓 주간 일괄 출결 · 평가</h3>
+      <p className="muted" style={{ marginTop: 0 }}>
+        한 카테고리를 <b>여러 팀에 한 번에</b> 발행합니다. 팀별 결과를 고르고(없으면 건너뜀) [일괄 발행].
+        각 팀 주가에 즉시 반영되고 <b>📣강사</b>로 기록됩니다.
+      </p>
+      <div className="evt-tabs">
+        {EVENT_CATEGORIES.map((c) => (
+          <button key={c.id} className={`evt-tab${cat === c.id ? ' active' : ''}`} onClick={() => changeCat(c.id)}>
+            {c.icon} {c.label}
+          </button>
+        ))}
+      </div>
+      <table className="tbl" style={{ marginTop: 10 }}>
+        <thead><tr><th>팀</th><th className="num">현재가</th><th>{catMeta.label} 결과</th></tr></thead>
+        <tbody>
+          {stocks.map((s) => (
+            <tr key={s.id}>
+              <td>{s.name} <span className="muted">{s.team}</span></td>
+              <td className="num mono">{(s.price || 0).toLocaleString()}</td>
+              <td>
+                <select value={rows[s.id] || ''} onChange={(e) => setRow(s.id, e.target.value)}>
+                  <option value="">건너뜀</option>
+                  {presets.map((p) => <option key={p.key} value={p.key}>{p.label} ({p.pct >= 0 ? '+' : ''}{p.pct}%)</option>)}
+                </select>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="row" style={{ marginTop: 8 }}>
+        <button className="primary" disabled={busy || items.length === 0} onClick={submit}>일괄 발행 ({items.length}팀)</button>
+        {items.length > 0 && <button className="ghost" disabled={busy} onClick={() => setRows({})}>초기화</button>}
+      </div>
+      <StatusMsg msg={msg} />
+    </div>
+  );
+}
+
+// ── 팀별 강사 이벤트 대시보드(공정성·가시성) — ledger 집계, 읽기 전용 ──
+function InstructorDashboard() {
+  const { stocks } = useApp();
+  const [log, setLog] = useState(null);
+  const [days, setDays] = useState(7); // 7=이번 주, 0=전체
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try { setLog(await getInstructorEventLog()); }
+    catch (e) { setErr(e.message || '불러오기 실패'); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const nameById = Object.fromEntries(stocks.map((s) => [s.id, s.name]));
+  const cutoff = days > 0 ? Date.now() - days * 86400000 : 0;
+  const entries = (log || []).filter((e) => !cutoff || (e.at && e.at >= cutoff));
+
+  const agg = {};
+  for (const e of entries) {
+    const a = (agg[e.stockId] ||= { good: 0, bad: 0, flat: 0, net: 0 });
+    if (e.pct > 0) a.good += 1; else if (e.pct < 0) a.bad += 1; else a.flat += 1;
+    a.net += e.pct;
+  }
+  const rows = Object.entries(agg)
+    .map(([id, a]) => ({ id, name: nameById[id] || id, ...a }))
+    .sort((x, y) => y.net - x.net);
+
+  return (
+    <div className="card">
+      <h3>📊 팀별 강사 이벤트 (공정성 점검)</h3>
+      <div className="row">
+        <button className={`evt-tab${days === 7 ? ' active' : ''}`} onClick={() => setDays(7)}>이번 주(7일)</button>
+        <button className={`evt-tab${days === 0 ? ' active' : ''}`} onClick={() => setDays(0)}>전체</button>
+        <button className="ghost" disabled={loading} onClick={load}>{loading ? '…' : '새로고침'}</button>
+      </div>
+      {err && <p className="err">{err}</p>}
+      {rows.length === 0 ? (
+        <p className="muted" style={{ marginTop: 8 }}>{loading ? '불러오는 중…' : '해당 기간 강사 이벤트가 없습니다.'}</p>
+      ) : (
+        <table className="tbl" style={{ marginTop: 8 }}>
+          <thead><tr><th>팀</th><th className="num">호재</th><th className="num">악재</th><th className="num">중립</th><th className="num">순 %합</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td>{r.name}</td>
+                <td className="num mono up">{r.good || ''}</td>
+                <td className="num mono down">{r.bad || ''}</td>
+                <td className="num mono muted">{r.flat || ''}</td>
+                <td className={`num mono ${r.net > 0 ? 'up' : r.net < 0 ? 'down' : ''}`}>{r.net > 0 ? '+' : ''}{r.net}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="muted">순 %합 = 발행한 시세%의 누적(대략적 편중 지표). 한 팀에 호재/악재가 쏠렸는지 확인해 균형을 맞추세요. (ledger 집계 · 비실시간)</p>
+    </div>
+  );
+}
+
 function NewsAndMint() {
   const { stocks, stockBoard, traitsByStock, scheduledNews } = useApp();
   const { busy, msg, run } = useAction();
@@ -506,6 +626,8 @@ export default function AdminPage() {
       <StockList />
       <Fundamentals />
       <InstructorEvents />
+      <WeeklyBatch />
+      <InstructorDashboard />
       <MembersOptions />
       <NewsAndMint />
     </div>

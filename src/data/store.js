@@ -115,6 +115,21 @@ export async function postImpactNews({ text, scope, target, pct }) {
 export async function postInstructorEvent({ stockId, presetKey, pct, text }) {
   return (await callable('postInstructorEvent')({ stockId, presetKey, pct, text })).data;
 }
+// 강사 이벤트 일괄 발행(주간 출결/평가). items: [{ stockId, presetKey?, pct?, text? }].
+export async function postInstructorEventsBatch(items) {
+  return (await callable('postInstructorEventsBatch')({ items })).data;
+}
+// 강사 이벤트 감사 로그 — ledger(공개 read)에서 type:'instructor_event' 만 조회(대시보드용, 비실시간).
+export async function getInstructorEventLog() {
+  const { db } = getFirebase();
+  const q = query(collection(db, 'ledger'), where('type', '==', 'instructor_event'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => {
+    const x = d.data();
+    const ms = x.ts && typeof x.ts.toMillis === 'function' ? x.ts.toMillis() : null;
+    return { stockId: x.target || null, pct: Number(x.pct) || 0, category: x.category || null, at: ms };
+  });
+}
 
 // ── 예약 뉴스 ───────────────────────────────────────────
 export async function scheduleNews({ text, scope, target, pct, publishAt, kind, category }) {

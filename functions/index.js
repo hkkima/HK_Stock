@@ -345,12 +345,9 @@ export const postImpactNews = onCall(async (req) => {
   return applyImpactNews({ text, scope, target, pct });
 });
 
-// ── 운영자: 강사 이벤트(출결·과제·프로젝트 등) — 특정 종목에 즉시 게시 ─
-//   자동 랜덤 뉴스와 분리된 별도 레버. 프리셋(events.js)으로 헤드라인·기본 시세%를 채우거나,
-//   text/pct 로 직접 지정. 항상 scope:'stock', kind:'instructor' 로 태깅된다.
-export const postInstructorEvent = onCall(async (req) => {
-  assertAdmin(req);
-  const { stockId, presetKey, pct, text } = req.data || {};
+// 강사 이벤트 1건 해석·적용(콜러블·일괄 공용). 프리셋(events.js)으로 헤드라인·기본 시세%를 채우거나
+//   text/pct 로 직접 지정. 항상 scope:'stock', kind:'instructor' 로 태깅. 잘못된 입력은 HttpsError.
+async function runInstructorEvent({ stockId, presetKey, pct, text }) {
   if (!stockId) throw new HttpsError('invalid-argument', 'stockId가 필요합니다.');
   const preset = presetKey ? findEventPreset(presetKey) : null;
   if (presetKey && !preset) throw new HttpsError('invalid-argument', '알 수 없는 이벤트입니다.');
@@ -365,7 +362,35 @@ export const postInstructorEvent = onCall(async (req) => {
   const p = pct != null && pct !== '' ? Number(pct) : (preset ? preset.pct : 0);
   if (!Number.isFinite(p) || p <= -100) throw new HttpsError('invalid-argument', 'pct는 -100 초과 숫자.');
 
-  return applyImpactNews({ text: body, scope: 'stock', target: stockId, pct: p, kind: 'instructor', category: preset?.cat || 'custom' });
+  const r = await applyImpactNews({ text: body, scope: 'stock', target: stockId, pct: p, kind: 'instructor', category: preset?.cat || 'custom' });
+  return { ...r, stockId, name };
+}
+
+// ── 운영자: 강사 이벤트(출결·과제·프로젝트 등) — 특정 종목에 즉시 게시 ─
+//   자동 랜덤 뉴스와 분리된 별도 레버.
+export const postInstructorEvent = onCall(async (req) => {
+  assertAdmin(req);
+  return runInstructorEvent(req.data || {});
+});
+
+// ── 운영자: 강사 이벤트 일괄 발행(주간 출결/평가 등) ─────────
+//   items: [{ stockId, presetKey?, pct?, text? }]. 항목별 best-effort — 실패는 건너뛰고 요약 반환.
+export const postInstructorEventsBatch = onCall(async (req) => {
+  assertAdmin(req);
+  const items = Array.isArray(req.data?.items) ? req.data.items : [];
+  if (items.length === 0) throw new HttpsError('invalid-argument', '발행할 항목이 없습니다.');
+  if (items.length > 100) throw new HttpsError('invalid-argument', '한 번에 최대 100건.');
+  const ok = []; const failed = [];
+  for (const it of items) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const r = await runInstructorEvent(it || {});
+      ok.push({ stockId: r.stockId, name: r.name, pct: r.pct });
+    } catch (e) {
+      failed.push({ stockId: it?.stockId || null, error: String(e?.message || e) });
+    }
+  }
+  return { count: ok.length, failed: failed.length, ok, failedItems: failed };
 });
 
 // ── 운영자: 뉴스 예약 — 지정 시각(publishAt, epoch ms)에 자동 발행 ─
