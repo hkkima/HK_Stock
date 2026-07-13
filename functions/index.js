@@ -8,7 +8,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { quoteBuy, quoteSell, nextAvgCost, priceAdjustDelta } from './market.js';
+import { quoteBuy, quoteSell, nextAvgCost, priceAdjustDelta, sellFee } from './market.js';
 import { generateNews, NEWS_TICK_PROB } from './news.js';
 import { applyTick } from './tick.js';
 import { findEventPreset, renderEventHeadline } from './events.js';
@@ -70,12 +70,12 @@ export const trade = onCall(async (req) => {
     const isMember = Array.isArray(stock.members) && stock.members.includes(userId);
     const locked = holding.locked || 0;
 
-    let cashDelta; let newShares; let newAvg; let fillPrice; let Q;
+    let cashDelta; let newShares; let newAvg; let fillPrice; let Q; let fee = 0;
     if (side === 'buy') {
       if (isMember) throw new HttpsError('failed-precondition', '자사주는 매수할 수 없습니다(스톡옵션으로만 보유).');
       try { Q = quoteBuy(stock, q); } catch (e) { throw new HttpsError('failed-precondition', e.message); }
       if (Q.cost > balance) throw new HttpsError('failed-precondition', '잔액이 부족합니다.');
-      cashDelta = -Q.cost;
+      cashDelta = -Q.cost; // 매수는 무료(진입 장려)
       fillPrice = Math.round(Q.cost / q);
       newShares = (holding.shares || 0) + q;
       newAvg = nextAvgCost(holding.shares || 0, holding.avgCost || 0, q, Q.cost / q);
@@ -83,7 +83,9 @@ export const trade = onCall(async (req) => {
       // 스톡옵션(locked)은 매도 불가 → 매도 가능 수량 = 보유 − 잠금.
       if ((holding.shares || 0) - locked < q) throw new HttpsError('failed-precondition', '매도 가능 수량이 부족합니다(스톡옵션 제외).');
       try { Q = quoteSell(stock, q); } catch (e) { throw new HttpsError('failed-precondition', e.message); }
-      cashDelta = Q.proceeds;
+      // 매도 수수료(결정적) — 곡선수령(proceeds)은 그대로 reserve 에서 빠지고, 수수료만 housePool 로 귀속.
+      fee = sellFee(Q.proceeds);
+      cashDelta = Q.proceeds - fee; // 지갑엔 수수료 뺀 순수령
       fillPrice = Math.round(Q.proceeds / q);
       newShares = (holding.shares || 0) - q;
       newAvg = holding.avgCost || 0;
@@ -91,15 +93,17 @@ export const trade = onCall(async (req) => {
 
     tx.update(sRef, {
       circulating: Q.newCirculating,
-      reserve: stock.reserve + (side === 'buy' ? Q.cost : -Q.proceeds),
+      reserve: stock.reserve + (side === 'buy' ? Q.cost : -Q.proceeds), // reserve 는 곡선적분 그대로(정합 유지)
       price: Q.newPrice,
       priceHistory: appendHist(stock.priceHistory, Q.newPrice),
     });
     tx.update(uRef, { balance: balance + cashDelta });
     tx.set(hRef, { userId, stockId, shares: newShares, avgCost: newAvg, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
-    tx.set(db.collection('trades').doc(), { userId, stockId, side, qty: q, price: fillPrice, cash: cashDelta, ts: FieldValue.serverTimestamp() });
-    tx.set(db.collection('ledger').doc(), { userId, stockId, type: side, delta: cashDelta, qty: q, price: fillPrice, ts: FieldValue.serverTimestamp() });
-    return { side, qty: q, price: fillPrice, cash: cashDelta, newBalance: balance + cashDelta, newPrice: Q.newPrice };
+    // 수수료(매도만)는 지갑→housePool 이동 = 총량 보존. increment 로만(틱과 충돌 방지, boardRef read 안 함).
+    if (fee > 0) tx.set(boardRef(), { housePool: FieldValue.increment(fee) }, { merge: true });
+    tx.set(db.collection('trades').doc(), { userId, stockId, side, qty: q, price: fillPrice, cash: cashDelta, fee, ts: FieldValue.serverTimestamp() });
+    tx.set(db.collection('ledger').doc(), { userId, stockId, type: side, delta: cashDelta, qty: q, price: fillPrice, fee, houseDelta: fee, ts: FieldValue.serverTimestamp() });
+    return { side, qty: q, price: fillPrice, cash: cashDelta, fee, newBalance: balance + cashDelta, newPrice: Q.newPrice };
   });
 });
 
@@ -920,5 +924,23 @@ export const rejectHelp = onCall(async (req) => {
   if (!hSnap.exists) throw new HttpsError('not-found', '봉사 요청을 찾을 수 없습니다.');
   if (hSnap.data().status !== 'open') throw new HttpsError('failed-precondition', '이미 처리된 요청입니다.');
   await hRef.update({ status: 'rejected', closedAt: FieldValue.serverTimestamp() });
+  return { ok: true };
+});
+
+// ── 작업자 프로필: 자기소개·스킬(본인 작성) ──────────────────
+//   users 문서는 쓰기 제한이라 별도 profiles/{userId} 에 함수 경유로 저장(PIN 검증).
+//   실적(완료 외주 수·받은 P 등)은 gigs 공개 컬렉션에서 클라가 직접 집계 → 저장 불필요.
+export const setProfile = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, bio, skills } = req.data || {};
+  if (!userId) throw new HttpsError('invalid-argument', 'userId가 필요합니다.');
+  const uSnap = await db.doc(`users/${userId}`).get();
+  if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+  requirePin(uSnap.data(), pinHash);
+  await db.doc(`profiles/${userId}`).set({
+    bio: String(bio || '').trim().slice(0, 500),
+    skills: String(skills || '').trim().slice(0, 200),
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
   return { ok: true };
 });

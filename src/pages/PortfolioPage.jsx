@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useApp } from '../state/AppContext.jsx';
 import { trade } from '../data/store.js';
-import { holdingValue, quoteSell } from '../domain/market.js';
+import { holdingValue, quoteSell, sellFee } from '../domain/market.js';
 
 function HoldingRow({ r, stock }) {
   const { session } = useApp();
@@ -12,8 +12,8 @@ function HoldingRow({ r, stock }) {
   const open = stock?.status === 'open';
   const sellable = r.shares - (r.locked || 0); // 스톡옵션(locked)은 매도 불가
   const q = Math.floor(Number(qty)) || 0;
-  let proceeds = null;
-  try { if (q > 0 && stock) proceeds = quoteSell(stock, q).proceeds; } catch { proceeds = null; }
+  let proceeds = null; // 매도 순수령(수수료 반영)
+  try { if (q > 0 && stock) { const p = quoteSell(stock, q).proceeds; proceeds = p - sellFee(p); } } catch { proceeds = null; }
   const canSell = open && q > 0 && q <= sellable;
 
   async function sell() {

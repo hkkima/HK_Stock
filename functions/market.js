@@ -13,6 +13,16 @@
 
 export const MIN_PRICE = 1;
 
+// 매도 수수료(bps) — 단타/회전매매 억제 + housePool 상시 수입원. 매수는 무료(진입 장려).
+//   ★결정적★(랜덤 아님) → 포인트 복사 불가 유지. "사고 곧바로 팔면 본전"이 "본전 −매도수수료"로 바뀜(의도).
+//   곡선(quoteBuy/quoteSell)은 그대로 두고, 정산 시 매도수령에서만 이 수수료를 떼어 housePool 로 보낸다.
+export const SELL_FEE_BPS = 200; // 2%
+
+// 매도수령(proceeds)에 대한 수수료(포인트, 정수). 항상 0 이상.
+export function sellFee(proceeds) {
+  return Math.max(0, Math.round((proceeds * SELL_FEE_BPS) / 10000));
+}
+
 export function isPosInt(n) {
   return Number.isInteger(n) && n > 0;
 }
