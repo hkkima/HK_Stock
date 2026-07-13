@@ -572,3 +572,353 @@ export const triggerNews = onCall(async (req) => {
   assertAdmin(req);
   return generateNews(db, FieldValue);
 });
+
+// ═══════════════════════════════════════════════════════════════
+//  외주 게시판(HK_Board) — 수강생 간 포인트 외주/봉사.
+//   ★불변식★: 에스크로는 gigs/{id}.escrow 필드에 보관한다. 등록 시 요청자 지갑에서
+//   escrow 로 옮기고, 정산/취소 시 지갑으로 되돌린다 → 지갑↔gig문서 이동뿐이라
+//   housePool 을 건드리지 않고 총량이 자동 보존된다(총량 = Σ지갑+Σ리저브+housePool+Σescrow).
+//   봉사 지급(approveHelp)만 예외로 housePool → 봉사자 지갑 민팅(increment, 배당과 동일).
+//   상태기계(gig): open → contracted → reported → done   (취소: cancelled, 중재: disputed→done/refunded)
+// ═══════════════════════════════════════════════════════════════
+
+function requirePin(user, pinHash) {
+  if (user.pinHash && pinHash !== user.pinHash) {
+    throw new HttpsError('permission-denied', 'PIN이 일치하지 않습니다.');
+  }
+}
+
+// ── 외주 등록: 요청자 지갑 → 에스크로 예치(등록 즉시) ──────────
+export const postGig = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, title, desc, deadline, reward } = req.data || {};
+  const r = Math.floor(Number(reward));
+  if (!userId) throw new HttpsError('invalid-argument', 'userId가 필요합니다.');
+  if (!title || !String(title).trim()) throw new HttpsError('invalid-argument', '제목이 필요합니다.');
+  if (!Number.isInteger(r) || r <= 0) throw new HttpsError('invalid-argument', '보상은 1 이상 정수여야 합니다.');
+
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const uSnap = await tx.get(uRef);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    const user = uSnap.data();
+    requirePin(user, pinHash);
+    const balance = user.balance || 0;
+    if (balance < r) throw new HttpsError('failed-precondition', '잔액이 부족합니다(보상만큼 예치 필요).');
+
+    const gRef = db.collection('gigs').doc();
+    tx.update(uRef, { balance: balance - r });
+    tx.set(gRef, {
+      requesterId: userId, requesterName: user.name || userId,
+      title: String(title).trim(), desc: String(desc || '').trim(),
+      deadline: deadline ? String(deadline).trim() : null,
+      reward: r, escrow: r, status: 'open',
+      applicants: [], workerId: null, workerName: null,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    tx.set(db.collection('ledger').doc(), { type: 'gig_post', gigId: gRef.id, userId, delta: -r, ts: FieldValue.serverTimestamp() });
+    return { id: gRef.id, reward: r, newBalance: balance - r };
+  });
+});
+
+// ── 외주 지원(대기): 다른 수강생이 지원 표시 ─────────────────
+export const applyGig = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, gigId } = req.data || {};
+  if (!userId || !gigId) throw new HttpsError('invalid-argument', 'userId/gigId 누락.');
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const gRef = db.doc(`gigs/${gigId}`);
+    const [uSnap, gSnap] = await Promise.all([tx.get(uRef), tx.get(gRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!gSnap.exists) throw new HttpsError('not-found', '외주를 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.status !== 'open') throw new HttpsError('failed-precondition', '지원할 수 없는 상태입니다.');
+    if (g.requesterId === userId) throw new HttpsError('failed-precondition', '본인 외주에는 지원할 수 없습니다.');
+    if (Array.isArray(g.applicants) && g.applicants.includes(userId)) throw new HttpsError('failed-precondition', '이미 지원했습니다.');
+    tx.update(gRef, { applicants: FieldValue.arrayUnion(userId) });
+    return { ok: true };
+  });
+});
+
+// ── 외주 지원 철회(계약 전) ──────────────────────────────────
+export const cancelApplication = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, gigId } = req.data || {};
+  if (!userId || !gigId) throw new HttpsError('invalid-argument', 'userId/gigId 누락.');
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const gRef = db.doc(`gigs/${gigId}`);
+    const [uSnap, gSnap] = await Promise.all([tx.get(uRef), tx.get(gRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!gSnap.exists) throw new HttpsError('not-found', '외주를 찾을 수 없습니다.');
+    if (gSnap.data().status !== 'open') throw new HttpsError('failed-precondition', '이미 계약이 진행된 외주입니다.');
+    tx.update(gRef, { applicants: FieldValue.arrayRemove(userId) });
+    return { ok: true };
+  });
+});
+
+// ── 외주 계약 성립: 요청자가 지원자 1명 승인 ─────────────────
+export const awardGig = onCall(async (req) => {
+  assertAuth(req);
+  const { requesterId, pinHash, gigId, workerId } = req.data || {};
+  if (!requesterId || !gigId || !workerId) throw new HttpsError('invalid-argument', 'requesterId/gigId/workerId 누락.');
+  return db.runTransaction(async (tx) => {
+    const rRef = db.doc(`users/${requesterId}`);
+    const wRef = db.doc(`users/${workerId}`);
+    const gRef = db.doc(`gigs/${gigId}`);
+    const [rSnap, wSnap, gSnap] = await Promise.all([tx.get(rRef), tx.get(wRef), tx.get(gRef)]);
+    if (!rSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(rSnap.data(), pinHash);
+    if (!gSnap.exists) throw new HttpsError('not-found', '외주를 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.requesterId !== requesterId) throw new HttpsError('permission-denied', '본인 외주만 계약할 수 있습니다.');
+    if (g.status !== 'open') throw new HttpsError('failed-precondition', '이미 계약된 외주입니다.');
+    if (!(Array.isArray(g.applicants) && g.applicants.includes(workerId))) throw new HttpsError('failed-precondition', '지원자 중에서만 선택할 수 있습니다.');
+    tx.update(gRef, {
+      workerId, workerName: (wSnap.exists ? wSnap.data().name : null) || workerId,
+      status: 'contracted', awardedAt: FieldValue.serverTimestamp(),
+    });
+    return { ok: true, workerId };
+  });
+});
+
+// ── 외주 취소(계약 전만): 에스크로 요청자에게 환불 ───────────
+export const cancelGig = onCall(async (req) => {
+  assertAuth(req);
+  const { requesterId, pinHash, gigId } = req.data || {};
+  if (!requesterId || !gigId) throw new HttpsError('invalid-argument', 'requesterId/gigId 누락.');
+  return db.runTransaction(async (tx) => {
+    const rRef = db.doc(`users/${requesterId}`);
+    const gRef = db.doc(`gigs/${gigId}`);
+    const [rSnap, gSnap] = await Promise.all([tx.get(rRef), tx.get(gRef)]);
+    if (!rSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(rSnap.data(), pinHash);
+    if (!gSnap.exists) throw new HttpsError('not-found', '외주를 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.requesterId !== requesterId) throw new HttpsError('permission-denied', '본인 외주만 취소할 수 있습니다.');
+    if (g.status !== 'open') throw new HttpsError('failed-precondition', '계약 후에는 취소할 수 없습니다(완료 승인 또는 분쟁 중재로 진행).');
+    const refund = g.escrow || 0;
+    tx.update(rRef, { balance: (rSnap.data().balance || 0) + refund });
+    tx.update(gRef, { escrow: 0, status: 'cancelled', closedAt: FieldValue.serverTimestamp() });
+    tx.set(db.collection('ledger').doc(), { type: 'gig_cancel', gigId, userId: requesterId, delta: refund, ts: FieldValue.serverTimestamp() });
+    return { ok: true, refund };
+  });
+});
+
+// ── 작업자: 완료 보고(요청자 승인 대기) ──────────────────────
+export const reportGig = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, gigId } = req.data || {};
+  if (!userId || !gigId) throw new HttpsError('invalid-argument', 'userId/gigId 누락.');
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const gRef = db.doc(`gigs/${gigId}`);
+    const [uSnap, gSnap] = await Promise.all([tx.get(uRef), tx.get(gRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!gSnap.exists) throw new HttpsError('not-found', '외주를 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.workerId !== userId) throw new HttpsError('permission-denied', '계약한 작업자만 보고할 수 있습니다.');
+    if (g.status !== 'contracted') throw new HttpsError('failed-precondition', '진행 중인 계약이 아닙니다.');
+    tx.update(gRef, { status: 'reported', reportedAt: FieldValue.serverTimestamp() });
+    return { ok: true };
+  });
+});
+
+// ── 요청자: 완료 승인 → 에스크로를 작업자에게 방출 ───────────
+export const confirmGig = onCall(async (req) => {
+  assertAuth(req);
+  const { requesterId, pinHash, gigId } = req.data || {};
+  if (!requesterId || !gigId) throw new HttpsError('invalid-argument', 'requesterId/gigId 누락.');
+  return db.runTransaction(async (tx) => {
+    const rRef = db.doc(`users/${requesterId}`);
+    const gRef = db.doc(`gigs/${gigId}`);
+    const [rSnap, gSnap] = await Promise.all([tx.get(rRef), tx.get(gRef)]);
+    if (!rSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(rSnap.data(), pinHash);
+    if (!gSnap.exists) throw new HttpsError('not-found', '외주를 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.requesterId !== requesterId) throw new HttpsError('permission-denied', '본인 외주만 승인할 수 있습니다.');
+    if (g.status !== 'reported' && g.status !== 'contracted') throw new HttpsError('failed-precondition', '승인할 수 있는 상태가 아닙니다.');
+    if (!g.workerId) throw new HttpsError('failed-precondition', '작업자가 없습니다.');
+    const wRef = db.doc(`users/${g.workerId}`);
+    const wSnap = await tx.get(wRef);
+    const pay = g.escrow || 0;
+    if (wSnap.exists) tx.update(wRef, { balance: (wSnap.data().balance || 0) + pay });
+    tx.update(gRef, { escrow: 0, status: 'done', doneAt: FieldValue.serverTimestamp() });
+    tx.set(db.collection('ledger').doc(), { type: 'gig_settle', gigId, userId: g.workerId, delta: pay, ts: FieldValue.serverTimestamp() });
+    return { ok: true, pay, workerId: g.workerId };
+  });
+});
+
+// ── 분쟁 신청(요청자·작업자 누구나) → 강사 중재 대기 ─────────
+export const disputeGig = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, gigId, reason } = req.data || {};
+  if (!userId || !gigId) throw new HttpsError('invalid-argument', 'userId/gigId 누락.');
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const gRef = db.doc(`gigs/${gigId}`);
+    const [uSnap, gSnap] = await Promise.all([tx.get(uRef), tx.get(gRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!gSnap.exists) throw new HttpsError('not-found', '외주를 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.requesterId !== userId && g.workerId !== userId) throw new HttpsError('permission-denied', '해당 외주의 당사자만 분쟁을 신청할 수 있습니다.');
+    if (!['contracted', 'reported'].includes(g.status)) throw new HttpsError('failed-precondition', '분쟁을 신청할 수 있는 상태가 아닙니다.');
+    tx.update(gRef, { status: 'disputed', disputeReason: String(reason || '').trim(), disputedBy: userId, disputedAt: FieldValue.serverTimestamp() });
+    return { ok: true };
+  });
+});
+
+// ── 강사 중재: 에스크로를 작업자에게 방출(release) 또는 요청자에게 환불(refund) ─
+export const resolveGig = onCall(async (req) => {
+  assertAdmin(req);
+  const { gigId, outcome, memo } = req.data || {};
+  if (!gigId) throw new HttpsError('invalid-argument', 'gigId가 필요합니다.');
+  if (outcome !== 'release' && outcome !== 'refund') throw new HttpsError('invalid-argument', "outcome은 'release' 또는 'refund'.");
+  return db.runTransaction(async (tx) => {
+    const gRef = db.doc(`gigs/${gigId}`);
+    const gSnap = await tx.get(gRef);
+    if (!gSnap.exists) throw new HttpsError('not-found', '외주를 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if ((g.escrow || 0) <= 0) throw new HttpsError('failed-precondition', '정산할 에스크로가 없습니다.');
+    const amt = g.escrow || 0;
+    if (outcome === 'release') {
+      if (!g.workerId) throw new HttpsError('failed-precondition', '작업자가 없습니다.');
+      const wRef = db.doc(`users/${g.workerId}`);
+      const wSnap = await tx.get(wRef);
+      if (wSnap.exists) tx.update(wRef, { balance: (wSnap.data().balance || 0) + amt });
+      tx.update(gRef, { escrow: 0, status: 'done', doneAt: FieldValue.serverTimestamp(), resolveMemo: String(memo || '').trim() });
+      tx.set(db.collection('ledger').doc(), { type: 'gig_resolve_release', gigId, userId: g.workerId, delta: amt, ts: FieldValue.serverTimestamp() });
+    } else {
+      const rRef = db.doc(`users/${g.requesterId}`);
+      const rSnap = await tx.get(rRef);
+      if (rSnap.exists) tx.update(rRef, { balance: (rSnap.data().balance || 0) + amt });
+      tx.update(gRef, { escrow: 0, status: 'refunded', closedAt: FieldValue.serverTimestamp(), resolveMemo: String(memo || '').trim() });
+      tx.set(db.collection('ledger').doc(), { type: 'gig_resolve_refund', gigId, userId: g.requesterId, delta: amt, ts: FieldValue.serverTimestamp() });
+    }
+    return { ok: true, outcome, amount: amt };
+  });
+});
+
+// ── 운영자: 종료된 외주 삭제(에스크로 0인 것만) ──────────────
+export const deleteGig = onCall(async (req) => {
+  assertAdmin(req);
+  const { gigId } = req.data || {};
+  if (!gigId) throw new HttpsError('invalid-argument', 'gigId가 필요합니다.');
+  const gRef = db.doc(`gigs/${gigId}`);
+  const gSnap = await gRef.get();
+  if (!gSnap.exists) throw new HttpsError('not-found', '외주를 찾을 수 없습니다.');
+  if ((gSnap.data().escrow || 0) > 0) throw new HttpsError('failed-precondition', '에스크로가 남아 있어 삭제할 수 없습니다(먼저 중재/정산).');
+  await gRef.delete();
+  return { ok: true };
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  봉사 요청(허가제) — 무점자가 도움을 요청, 강사 승인 시 봉사자에게 포인트 증정.
+//   보상 출처 = housePool(민팅). 요청자 지갑은 건드리지 않음(에스크로 없음).
+// ═══════════════════════════════════════════════════════════════
+
+// ── 봉사 요청 등록 ───────────────────────────────────────────
+export const postHelp = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, title, desc, deadline } = req.data || {};
+  if (!userId) throw new HttpsError('invalid-argument', 'userId가 필요합니다.');
+  if (!title || !String(title).trim()) throw new HttpsError('invalid-argument', '제목이 필요합니다.');
+  const uSnap = await db.doc(`users/${userId}`).get();
+  if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+  requirePin(uSnap.data(), pinHash);
+  const ref = await db.collection('helpRequests').add({
+    requesterId: userId, requesterName: uSnap.data().name || userId,
+    title: String(title).trim(), desc: String(desc || '').trim(),
+    deadline: deadline ? String(deadline).trim() : null,
+    status: 'open', volunteers: [], helperId: null, helperName: null,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return { id: ref.id };
+});
+
+// ── 봉사 지원(도와주겠다고 표시) ─────────────────────────────
+export const volunteerHelp = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, helpId } = req.data || {};
+  if (!userId || !helpId) throw new HttpsError('invalid-argument', 'userId/helpId 누락.');
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const hRef = db.doc(`helpRequests/${helpId}`);
+    const [uSnap, hSnap] = await Promise.all([tx.get(uRef), tx.get(hRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!hSnap.exists) throw new HttpsError('not-found', '봉사 요청을 찾을 수 없습니다.');
+    const h = hSnap.data();
+    if (h.status !== 'open') throw new HttpsError('failed-precondition', '지원할 수 없는 상태입니다.');
+    if (h.requesterId === userId) throw new HttpsError('failed-precondition', '본인 요청에는 지원할 수 없습니다.');
+    if (Array.isArray(h.volunteers) && h.volunteers.includes(userId)) throw new HttpsError('failed-precondition', '이미 지원했습니다.');
+    tx.update(hRef, { volunteers: FieldValue.arrayUnion(userId) });
+    return { ok: true };
+  });
+});
+
+// ── 봉사 요청 취소(요청자, 승인 전만) ────────────────────────
+export const cancelHelp = onCall(async (req) => {
+  assertAuth(req);
+  const { requesterId, pinHash, helpId } = req.data || {};
+  if (!requesterId || !helpId) throw new HttpsError('invalid-argument', 'requesterId/helpId 누락.');
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${requesterId}`);
+    const hRef = db.doc(`helpRequests/${helpId}`);
+    const [uSnap, hSnap] = await Promise.all([tx.get(uRef), tx.get(hRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!hSnap.exists) throw new HttpsError('not-found', '봉사 요청을 찾을 수 없습니다.');
+    const h = hSnap.data();
+    if (h.requesterId !== requesterId) throw new HttpsError('permission-denied', '본인 요청만 취소할 수 있습니다.');
+    if (h.status !== 'open') throw new HttpsError('failed-precondition', '이미 처리된 요청입니다.');
+    tx.update(hRef, { status: 'cancelled', closedAt: FieldValue.serverTimestamp() });
+    return { ok: true };
+  });
+});
+
+// ── 강사 승인: 봉사자에게 housePool 에서 포인트 증정(민팅) ────
+export const approveHelp = onCall(async (req) => {
+  assertAdmin(req);
+  const { helpId, helperId, amount, memo } = req.data || {};
+  const amt = Math.floor(Number(amount));
+  if (!helpId || !helperId) throw new HttpsError('invalid-argument', 'helpId/helperId 누락.');
+  if (!Number.isInteger(amt) || amt <= 0) throw new HttpsError('invalid-argument', '지급 포인트는 1 이상 정수여야 합니다.');
+  return db.runTransaction(async (tx) => {
+    const hRef = db.doc(`helpRequests/${helpId}`);
+    const wRef = db.doc(`users/${helperId}`);
+    const [hSnap, wSnap] = await Promise.all([tx.get(hRef), tx.get(wRef)]);
+    if (!hSnap.exists) throw new HttpsError('not-found', '봉사 요청을 찾을 수 없습니다.');
+    if (!wSnap.exists) throw new HttpsError('not-found', '봉사자 계정을 찾을 수 없습니다.');
+    const h = hSnap.data();
+    if (h.status !== 'open') throw new HttpsError('failed-precondition', '이미 처리된 요청입니다.');
+    // housePool 은 읽지 않고 increment 로만(시세 틱 충돌 방지). 하우스 음수 허용.
+    tx.update(wRef, { balance: (wSnap.data().balance || 0) + amt });
+    tx.set(boardRef(), { housePool: FieldValue.increment(-amt) }, { merge: true });
+    tx.update(hRef, {
+      status: 'granted', helperId, helperName: wSnap.data().name || helperId,
+      grantedAmount: amt, memo: String(memo || '').trim(), grantedAt: FieldValue.serverTimestamp(),
+    });
+    tx.set(db.collection('ledger').doc(), { type: 'help_grant', helpId, userId: helperId, delta: amt, memo: String(memo || '').trim(), ts: FieldValue.serverTimestamp() });
+    return { ok: true, amount: amt, helperId };
+  });
+});
+
+// ── 강사: 봉사 요청 반려/종료 ────────────────────────────────
+export const rejectHelp = onCall(async (req) => {
+  assertAdmin(req);
+  const { helpId } = req.data || {};
+  if (!helpId) throw new HttpsError('invalid-argument', 'helpId가 필요합니다.');
+  const hRef = db.doc(`helpRequests/${helpId}`);
+  const hSnap = await hRef.get();
+  if (!hSnap.exists) throw new HttpsError('not-found', '봉사 요청을 찾을 수 없습니다.');
+  if (hSnap.data().status !== 'open') throw new HttpsError('failed-precondition', '이미 처리된 요청입니다.');
+  await hRef.update({ status: 'rejected', closedAt: FieldValue.serverTimestamp() });
+  return { ok: true };
+});

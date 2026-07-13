@@ -142,5 +142,18 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
+
+    // ── 외주 게시판 (HK_Board) ───────────────────────────────
+    //   외주(gigs)·봉사(helpRequests) 모두 공개 읽기(학급 투명성).
+    //   ★모든 쓰기(등록·지원·계약·에스크로 정산·봉사 지급)는 Cloud Functions(Admin SDK)만★.
+    //   에스크로는 gigs/{id}.escrow 필드에 보관 → 클라 직접 쓰기 차단으로 무결성 보장.
+    match /gigs/{gigId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /helpRequests/{helpId} {
+      allow read: if true;
+      allow write: if false;
+    }
   }
 }
