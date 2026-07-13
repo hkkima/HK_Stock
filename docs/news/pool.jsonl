@@ -14,3 +14,40 @@
 {"id":"ubi-002","scenario":"ubi-peach","scope":"stock","target":"300508","pct":4,"polarity":"good","status":"draft","text":"유비 소프트, '파크라이 빙수' 여름 성수기 대박","notes":"파크라이 패러디 + 성수기"}
 {"id":"rkt-001","scenario":"rocketbit-gamble","scope":"stock","target":"300506","pct":5,"polarity":"good","status":"draft","text":"로켓비트 '일일 무당 트레이딩', 입소문 타고 대성공","notes":"도박성 리딩 호재. 구설수 왕복의 상승 국면"}
 {"id":"rkt-002","scenario":"rocketbit-gamble","scope":"stock","target":"300506","pct":-4,"polarity":"bad","status":"draft","text":"로켓비트 고객 '무당 리딩 믿었다 손실' 후기 확산","notes":"구설수 왕복의 하락 국면"}
+{"id":"chess-003","scenario":"chess-cult","scope":"stock","target":"300502","pct":3,"polarity":"good","status":"draft","text":"체스의 신, 해외 첫 지부 '갬빗 도쿄' 개설 - 김민철 기자","notes":"세뇌 아크 4단(해외). 완만 상승"}
+{"id":"chess-004","scenario":"chess-cult","scope":"stock","target":"300502","pct":2,"polarity":"good","status":"draft","text":"[르포] 체스의 신 신도… 아니 회원들의 하루 - 김민철 기자","notes":"'신도' 말실수=사이비 암시"}
+{"id":"chess-005","scenario":"chess-cult","scope":"stock","target":"300502","pct":3,"polarity":"good","status":"draft","text":"체스의 신 '체크메이트 세트' 출시 즉시 완판 - 김민철 기자","notes":"굿즈 완판. 세력 확장"}
+{"id":"chess-006","scenario":"chess-cult","scope":"stock","target":"300502","pct":2,"polarity":"good","status":"draft","text":"\"인생이 바뀌었다\" 체스의 신 간증 릴레이 - 김민철 기자","notes":"간증=사이비 암시. 소폭 상승"}
+{"id":"kami-004","scenario":"kami-holdings","scope":"stock","target":"500104","pct":3,"polarity":"good","status":"draft","text":"까미홀딩스, 계열 까미비전스에 영상AI 지분 확대","notes":"A 시너지. Tier2 하단"}
+{"id":"kami-005","scenario":"kami-holdings","scope":"stock","target":"500104","pct":0,"polarity":"flat","status":"draft","text":"까미홀딩스 '생태계' 청사진에 기대 반 우려 반","notes":"중립 분위기"}
+{"id":"kami-006","scenario":"kami-holdings","scope":"stock","target":"500104","pct":-4,"polarity":"bad","status":"draft","text":"까미홀딩스 계열 편입설에 일부 팀 독립성 반발","notes":"C 견제. housePool 회복"}
+{"id":"kami-007","scenario":"kami-holdings","scope":"stock","target":"500104","pct":-5,"polarity":"bad","status":"draft","text":"까미홀딩스, 투자 자회사 부진에 재무 부담설","notes":"C 견제. housePool 회복 우선"}
+{"id":"kami-008","scenario":"kami-holdings","scope":"stock","target":"500104","pct":0,"polarity":"flat","status":"draft","text":"까미홀딩스, 신규 투자펀드 조성 완료 소식","notes":"B 외부유치지만 housePool 고려 헤드라인만"}
+{"id":"tile-004","scenario":"tile-art","scope":"stock","target":"300504","pct":3,"polarity":"good","status":"draft","text":"하늘타일공사, ISS 벽면 '우주 타일아트' 수주설","notes":"소재지=국제우주정거장 개그"}
+{"id":"tile-005","scenario":"tile-art","scope":"stock","target":"300504","pct":-3,"polarity":"bad","status":"draft","text":"하늘타일공사, 타일 원가 급등에 마진 압박","notes":"본업 악재"}
+{"id":"tile-006","scenario":"tile-art","scope":"stock","target":"300504","pct":-2,"polarity":"bad","status":"draft","text":"하늘타일공사, 예술 인력 영입에 본업 유출 논란","notes":"예술 외도 부작용"}
+{"id":"weed-003","scenario":"weed-innuendo","scope":"stock","target":"300505","pct":3,"polarity":"good","status":"draft","text":"WEED HOLDINGS, 남미 '단골' 재주문 급증","notes":"단골=암시"}
+{"id":"weed-004","scenario":"weed-innuendo","scope":"stock","target":"300505","pct":-4,"polarity":"bad","status":"draft","text":"WEED HOLDINGS, 검역 강화에 배송 지연 속출","notes":"통관 악재"}
+{"id":"weed-005","scenario":"weed-innuendo","scope":"stock","target":"300505","pct":0,"polarity":"flat","status":"draft","text":"WEED HOLDINGS \"뭐든 배달\" 신사업에 갸웃","notes":"신청서 심부름 개그, 헤드라인만"}
+{"id":"weed-006","scenario":"weed-innuendo","scope":"stock","target":"300505","pct":0,"polarity":"flat","status":"draft","text":"WEED HOLDINGS, 월드컵 개최지 인근 창고 증설","notes":"월드컵 특수 빌드업, 헤드라인만"}
+{"id":"ubi-003","scenario":"ubi-peach","scope":"stock","target":"300508","pct":3,"polarity":"good","status":"draft","text":"유비 소프트 '레인보우식스 파르페' 예약 폭주","notes":"레인보우식스 패러디"}
+{"id":"ubi-004","scenario":"ubi-peach","scope":"stock","target":"300508","pct":-4,"polarity":"bad","status":"draft","text":"유비 소프트 '왓치독 셔벗' 위생 논란에 회수","notes":"왓치독 패러디+악재"}
+{"id":"ubi-005","scenario":"ubi-peach","scope":"stock","target":"300508","pct":-3,"polarity":"bad","status":"draft","text":"유비 소프트, 복숭아 흉작에 원가 비상","notes":"농산물 리스크"}
+{"id":"ubi-006","scenario":"ubi-peach","scope":"stock","target":"300508","pct":0,"polarity":"flat","status":"draft","text":"유비 소프트 '저스트댄스 소르베' 한정 출시","notes":"저스트댄스 패러디, 헤드라인만"}
+{"id":"rkt-003","scenario":"rocketbit-gamble","scope":"stock","target":"300506","pct":-5,"polarity":"bad","status":"draft","text":"로켓비트 '적중률 조작' 의혹에 이용자 술렁","notes":"구설 하락"}
+{"id":"rkt-004","scenario":"rocketbit-gamble","scope":"stock","target":"300506","pct":3,"polarity":"good","status":"draft","text":"로켓비트, 리딩 라이선스 심사 통과 홍보","notes":"반등"}
+{"id":"rkt-005","scenario":"rocketbit-gamble","scope":"stock","target":"300506","pct":-4,"polarity":"bad","status":"draft","text":"로켓비트 회원 \"환급 지연\" 집단 항의","notes":"구설 하락"}
+{"id":"rkt-006","scenario":"rocketbit-gamble","scope":"stock","target":"300506","pct":2,"polarity":"good","status":"draft","text":"로켓비트, VIP '무당룸' 신설 논란 속 흥행","notes":"논란+흥행 소폭"}
+{"id":"game-001","scenario":"game-sector","scope":"sector","target":"게임","pct":2,"polarity":"good","status":"draft","text":"게임 업종, 여름 신작 러시에 동반 강세","notes":"업종 호재"}
+{"id":"game-002","scenario":"game-sector","scope":"sector","target":"게임","pct":-2,"polarity":"bad","status":"draft","text":"게임 업종, 확률형 규제 강화 우려에 위축","notes":"업종 악재"}
+{"id":"game-003","scenario":"game-sector","scope":"stock","target":"neonwave","pct":3,"polarity":"good","status":"draft","text":"네온웨이브 신작 티저에 게임주 들썩","notes":"라이징스타 서브플롯"}
+{"id":"ai-001","scenario":"ai-survivor","scope":"stock","target":"novatics","pct":3,"polarity":"good","status":"draft","text":"노바틱스, 딥마인드랩 인재 대거 흡수","notes":"반사이익"}
+{"id":"ai-002","scenario":"ai-survivor","scope":"stock","target":"novatics","pct":0,"polarity":"flat","status":"draft","text":"노바틱스, 'AI 마지막 생존자' 밈에 재조명","notes":"헤드라인만"}
+{"id":"ai-003","scenario":"ai-survivor","scope":"sector","target":"AI","pct":-2,"polarity":"bad","status":"draft","text":"AI 업종, 과열 논란에 차익실현 매물","notes":"조정"}
+{"id":"market-002","scenario":"market-wide","scope":"all","target":null,"pct":0,"polarity":"flat","status":"draft","text":"지수 사흘째 등락 반복… 방향성 탐색","notes":"중립 분위기"}
+{"id":"market-003","scenario":"market-wide","scope":"all","target":null,"pct":-1,"polarity":"bad","status":"draft","text":"하우스, 유동성 조절 나서나… 시장 주목","notes":"housePool 서사 미세 반영"}
+{"id":"space-001","scenario":"space-md","scope":"stock","target":"300503","pct":3,"polarity":"good","status":"draft","text":"스페이스 MD, 미세중력 신약 후보물질 발굴","notes":"R&D 호재"}
+{"id":"space-002","scenario":"space-md","scope":"stock","target":"300503","pct":-3,"polarity":"bad","status":"draft","text":"스페이스 MD, 우주 실험 모듈 지연에 차질","notes":"R&D 악재"}
+{"id":"naeil-001","scenario":"naeil-lazy","scope":"stock","target":"300507","pct":0,"polarity":"flat","status":"draft","text":"내일할래, 지각사유 AI '오늘도 완벽한 변명'","notes":"개그, 헤드라인만"}
+{"id":"naeil-002","scenario":"naeil-lazy","scope":"stock","target":"300507","pct":0,"polarity":"flat","status":"draft","text":"내일할래, 서비스 점검 '내일로 미룸' 셀프조롱","notes":"개그, 헤드라인만"}
+{"id":"naeil-003","scenario":"naeil-lazy","scope":"stock","target":"300507","pct":-3,"polarity":"bad","status":"draft","text":"내일할래, 이용자 급증에 서버 또 지각","notes":"자기지시적 악재"}
