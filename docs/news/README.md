@@ -34,6 +34,11 @@ node test-harness/news-schedule.mjs --seed <plan.json> "<serviceAccount.json>"  
 따라서 실제 시드는 **firebase-admin + 서비스 계정 키**로만 가능하며, 키는 **리포 밖·`.gitignore`** 다.
 `--check`/`--status`/`--plan`/`--seed --dry` 는 공개 read 라 키 없이 동작한다.
 
+키 공급 방식(둘 중 하나):
+- 인자로 키 파일 경로: `--seed <plan.json> "<serviceAccount.json>"` (로컬 운영자)
+- 환경변수 `FIREBASE_SA_KEY_B64`(base64 인코딩된 키 JSON): 인자 없이 `--seed <plan.json>` 만 실행.
+  프로비저닝된 환경(정기 트리거 세션 포함)이 이 방식을 쓴다. 키는 절대 로그·커밋 금지.
+
 ## 주간 정기 편성 (트리거)
 
 매주 월 08:30 KST 정기 트리거가 이 워크플로우를 돌린다: `--check` → 그 주 계획 작성 →

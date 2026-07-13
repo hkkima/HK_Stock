@@ -125,10 +125,19 @@ function validatePlan(plan) {
 }
 
 // ── --seed : scheduledNews 큐에 시드 (Admin SDK) ────────────
+// 서비스 계정 자격 로드: 인자로 준 키 파일 우선, 없으면 환경변수 FIREBASE_SA_KEY_B64(base64) 사용.
+//   → 키 파일 경로(로컬 운영자)와 프로비저닝된 환경(정기 트리거) 양쪽에서 동작.
+function loadServiceAccount(keyPath) {
+  if (keyPath && keyPath !== '--dry') return JSON.parse(readFileSync(keyPath, 'utf8'));
+  if (process.env.FIREBASE_SA_KEY_B64) return JSON.parse(Buffer.from(process.env.FIREBASE_SA_KEY_B64, 'base64').toString('utf8'));
+  return null;
+}
+
 async function seed(planPath, keyPath, dry) {
   const plan = JSON.parse(readFileSync(planPath, 'utf8'));
   const errs = validatePlan(plan);
   if (errs.length) { console.error('계획 검증 실패:\n  - ' + errs.join('\n  - ')); process.exit(1); }
+  const sa = dry ? null : loadServiceAccount(keyPath);
 
   const rows = plan.items.map((it, i) => ({
     id: `plan_${plan.planId}_${String(i).padStart(2, '0')}`,
@@ -148,13 +157,14 @@ async function seed(planPath, keyPath, dry) {
     console.log(`  ${when}  [${r.scope}${r.target ? '/' + r.target : ''} ${r.pct > 0 ? '+' : ''}${r.pct}%] ${r.text}`);
   }
 
-  if (dry || !keyPath) {
-    console.log(`\n(dry-run) 키 미제공 → 실제 시드 안 함. 실행: node test-harness/news-schedule.mjs --seed ${planPath} "<serviceAccount.json>"`);
+  if (dry || !sa) {
+    const why = dry ? '--dry' : '키 미제공(인자 없음·FIREBASE_SA_KEY_B64 미설정)';
+    console.log(`\n(dry-run: ${why}) 실제 시드 안 함. 실행: node test-harness/news-schedule.mjs --seed ${planPath} "<serviceAccount.json>"  또는  FIREBASE_SA_KEY_B64 설정 후 --seed ${planPath}`);
     return;
   }
 
   const { default: admin } = await import('firebase-admin');
-  admin.initializeApp({ credential: admin.credential.cert(JSON.parse(readFileSync(keyPath, 'utf8'))) });
+  admin.initializeApp({ credential: admin.credential.cert(sa) });
   const db = admin.firestore();
   const FieldValue = admin.firestore.FieldValue;
 
