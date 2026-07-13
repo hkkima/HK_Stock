@@ -1,0 +1,117 @@
+{
+  "at": "2026-07-13T10:08:12.276Z",
+  "project": "hk-chess-betting",
+  "housePool": 4651,
+  "autoNewsEnabled": true,
+  "newsFeedLen": 50,
+  "stockCount": 14,
+  "sectors": [
+    "AI",
+    "IT",
+    "게임",
+    "금융",
+    "우주",
+    "전문",
+    "제조"
+  ],
+  "stocks": [
+    {
+      "id": "100401",
+      "name": "까미 비전스",
+      "sector": "IT",
+      "price": 436,
+      "status": "closed"
+    },
+    {
+      "id": "300501",
+      "name": "까미 스트리밍",
+      "sector": "IT",
+      "price": 473,
+      "status": "closed"
+    },
+    {
+      "id": "300502",
+      "name": "체스의 신",
+      "sector": "제조",
+      "price": 1599,
+      "status": "closed"
+    },
+    {
+      "id": "300503",
+      "name": "스페이스 MD",
+      "sector": "우주",
+      "price": 886,
+      "status": "closed"
+    },
+    {
+      "id": "300504",
+      "name": "하늘타일공사",
+      "sector": "제조",
+      "price": 1159,
+      "status": "closed"
+    },
+    {
+      "id": "300505",
+      "name": "WEED HOLDINGS",
+      "sector": "제조",
+      "price": 162,
+      "status": "closed"
+    },
+    {
+      "id": "300506",
+      "name": "로켓비트",
+      "sector": "전문",
+      "price": 1827,
+      "status": "closed"
+    },
+    {
+      "id": "300507",
+      "name": "내일할래",
+      "sector": "전문",
+      "price": 151,
+      "status": "closed"
+    },
+    {
+      "id": "300508",
+      "name": "유비 소프트",
+      "sector": "제조",
+      "price": 1417,
+      "status": "closed"
+    },
+    {
+      "id": "500104",
+      "name": "까미홀딩스",
+      "sector": "금융",
+      "price": 2886,
+      "status": "closed"
+    },
+    {
+      "id": "cubestudio",
+      "name": "큐브스튜디오",
+      "sector": "게임",
+      "price": 1277,
+      "status": "closed"
+    },
+    {
+      "id": "neonwave",
+      "name": "네온웨이브",
+      "sector": "게임",
+      "price": 2468,
+      "status": "closed"
+    },
+    {
+      "id": "novatics",
+      "name": "노바틱스",
+      "sector": "AI",
+      "price": 442,
+      "status": "closed"
+    },
+    {
+      "id": "pixelroad",
+      "name": "픽셀로드",
+      "sector": "게임",
+      "price": 1001,
+      "status": "closed"
+    }
+  ]
+}

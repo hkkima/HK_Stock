@@ -1,0 +1,29 @@
+{
+  "planId": "2026-07-14",
+  "timezone": "Asia/Seoul",
+  "generatedAt": "2026-07-13",
+  "kind": "auto-routine",
+  "note": "주간 뉴스 편성(2026-07-14 ~ 07-17). 각 item 은 scheduledNews 큐에 예약되고, 배포된 publishScheduledNews(매분) 스케줄러가 만기 시각에 applyImpactNews 로 적용·정산한다. 규칙: 특성(trait) 스코프 금지(비공개), 실명 비방 금지, 대상은 항상 기업(팀), 헤드라인 12~24자, 악재 살짝 우위(상승 편향 보정), pct 개별 ±2~6·업종 ±1~3·전체 ±1~2·확신없으면 0(헤드라인만).",
+  "items": [
+    { "date": "2026-07-14", "time": "10:30", "scope": "stock",  "target": "neonwave",   "pct": 5,  "text": "네온웨이브, 신작 티저에 매수세 집결" },
+    { "date": "2026-07-14", "time": "11:30", "scope": "sector", "target": "제조",        "pct": -2, "text": "제조 업종, 원가 부담에 투자심리 위축" },
+    { "date": "2026-07-14", "time": "13:30", "scope": "stock",  "target": "300507",     "pct": -4, "text": "내일할래, 납기 지연설에 매도 행렬" },
+    { "date": "2026-07-14", "time": "15:00", "scope": "all",    "target": null,         "pct": 0,  "text": "장 마감 앞두고 관망세, 거래량 잔잔" },
+
+    { "date": "2026-07-15", "time": "10:00", "scope": "stock",  "target": "novatics",   "pct": 4,  "text": "노바틱스, 대형 모델 계약 기대감 부각" },
+    { "date": "2026-07-15", "time": "11:00", "scope": "sector", "target": "게임",        "pct": 2,  "text": "게임 업종, 여름 성수기 기대에 동반 강세" },
+    { "date": "2026-07-15", "time": "13:00", "scope": "stock",  "target": "300506",     "pct": -5, "text": "로켓비트, 핵심 인력 이탈설에 급랭" },
+    { "date": "2026-07-15", "time": "14:30", "scope": "stock",  "target": "500104",     "pct": -3, "text": "까미홀딩스, 배당 축소 우려에 차익실현" },
+
+    { "date": "2026-07-16", "time": "10:30", "scope": "sector", "target": "AI",          "pct": 2,  "text": "AI 업종, 정책 지원 기대에 자금 유입" },
+    { "date": "2026-07-16", "time": "11:30", "scope": "stock",  "target": "cubestudio", "pct": 4,  "text": "큐브스튜디오, 협업 데모 호평에 반등" },
+    { "date": "2026-07-16", "time": "13:30", "scope": "stock",  "target": "300505",     "pct": -4, "text": "WEED HOLDINGS, 재고 부담에 매물 출회" },
+    { "date": "2026-07-16", "time": "15:00", "scope": "all",    "target": null,         "pct": -1, "text": "대외 변수에 시장 전반 눈치보기" },
+
+    { "date": "2026-07-17", "time": "10:00", "scope": "stock",  "target": "pixelroad",  "pct": 3,  "text": "픽셀로드, 신규 유입에 거래 활발" },
+    { "date": "2026-07-17", "time": "11:00", "scope": "sector", "target": "IT",          "pct": 2,  "text": "IT 업종, 신규 발주 소식에 훈풍" },
+    { "date": "2026-07-17", "time": "13:00", "scope": "stock",  "target": "300503",     "pct": -4, "text": "스페이스 MD, 발사 일정 연기에 실망 매물" },
+    { "date": "2026-07-17", "time": "14:00", "scope": "stock",  "target": "100401",     "pct": 3,  "text": "까미 비전스, 파트너십 확대 기대감" },
+    { "date": "2026-07-17", "time": "15:30", "scope": "all",    "target": null,         "pct": 1,  "text": "주말 앞두고 저가 매수 유입 온기" }
+  ]
+}
