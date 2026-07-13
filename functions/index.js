@@ -944,3 +944,98 @@ export const setProfile = onCall(async (req) => {
   }, { merge: true });
   return { ok: true };
 });
+
+// ═══════════════════════════════════════════════════════════════
+//  ③ 주간 펀더멘탈 배당 — "태도/행동 기반 장기투자" 유도 레버.
+//   매주 월 09:00(KST) '지난주' 팀 행동점수로 보유자에게 배당(housePool 지급, payDividend 와 동일 회계).
+//   행동점수 = 지난주 Σ(instructor_event.pct, 팀별) + 운영자 수동 오버라이드(meta/behaviorScores[weekKey]).
+//   ★기본 OFF(meta/stockBoard.dividendEnabled)★ — 켜기 전엔 월요일이 와도 지급 0(배포해도 이번 회차 미지급).
+//   perShare = round(score × rate), score>0 팀만. 멱등: 이미 지급한 주(meta/dividendPaid)는 재지급 안 함.
+// ═══════════════════════════════════════════════════════════════
+
+// Asia/Seoul ISO 주 키(예 "2026-W28"). HK_DP src/util/week.js·교환소와 동일 로직.
+function seoulWeekKey(d = new Date()) {
+  const s = new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  const day = (s.getDay() + 6) % 7; // 월=0
+  s.setHours(0, 0, 0, 0);
+  s.setDate(s.getDate() - day + 3); // 해당 주 목요일
+  const firstThu = new Date(s.getFullYear(), 0, 4);
+  const week = 1 + Math.round(((s - firstThu) / 86400000 - 3 + ((firstThu.getDay() + 6) % 7)) / 7);
+  return `${s.getFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+// 운영자: 배당 on/off + 배율(rate) 런타임 조정(재배포 불필요). 기본 rate=10.
+export const setDividendConfig = onCall(async (req) => {
+  assertAdmin(req);
+  const patch = {};
+  if (req.data?.enabled != null) patch.dividendEnabled = !!req.data.enabled;
+  if (req.data?.rate != null) {
+    const r = Number(req.data.rate);
+    if (!Number.isFinite(r) || r < 0) throw new HttpsError('invalid-argument', 'rate는 0 이상 숫자.');
+    patch.dividendRate = r;
+  }
+  if (Object.keys(patch).length === 0) throw new HttpsError('invalid-argument', 'enabled 또는 rate가 필요합니다.');
+  await boardRef().set(patch, { merge: true });
+  return { ok: true, ...patch };
+});
+
+// 운영자: 주(weekKey) 팀 행동점수 수동 오버라이드 저장(주중 여유있게 작성 → 차주 월 적용).
+//   scores: { [stockId]: number }. weekKey 미지정 시 '이번 주'. 자동집계와 합산된다.
+export const setBehaviorScores = onCall(async (req) => {
+  assertAdmin(req);
+  const wk = String(req.data?.weekKey || seoulWeekKey()).trim();
+  const scores = req.data?.scores;
+  if (!scores || typeof scores !== 'object') throw new HttpsError('invalid-argument', 'scores 객체가 필요합니다.');
+  const clean = {};
+  for (const [k, v] of Object.entries(scores)) { const n = Number(v); if (Number.isFinite(n)) clean[k] = n; }
+  await db.doc('meta/behaviorScores').set({ [wk]: clean }, { merge: true });
+  return { ok: true, weekKey: wk, count: Object.keys(clean).length };
+});
+
+// 자동: 매주 월 09:00(KST) 지난주 행동점수로 보유자에게 배당.
+export const payWeeklyDividend = onSchedule({ schedule: '0 9 * * 1', timeZone: 'Asia/Seoul' }, async () => {
+  const board = (await boardRef().get()).data() || {};
+  if (!board.dividendEnabled) return; // ★게이트: 꺼져 있으면 지급 안 함★
+  const rate = Number.isFinite(board.dividendRate) ? board.dividendRate : 10;
+
+  const lastWeek = seoulWeekKey(new Date(Date.now() - 3 * 86400000)); // 월요일−3일 = 지난주
+  const paidRef = db.doc('meta/dividendPaid');
+  if (((await paidRef.get()).data() || {})[lastWeek]) return; // 멱등: 이미 지급한 주면 스킵
+
+  // 지난주 강사이벤트 자동집계(pct 합, 팀별). 단일 등가쿼리 후 weekKey 코드필터(복합인덱스 불필요).
+  const weekAgo = Date.now() - 9 * 86400000;
+  const evSnap = await db.collection('ledger').where('type', '==', 'instructor_event').get();
+  const scoreByStock = {};
+  evSnap.forEach((d) => {
+    const e = d.data();
+    const t = e.ts?.toMillis ? e.ts.toMillis() : 0;
+    if (t < weekAgo) return;
+    if (seoulWeekKey(new Date(t)) !== lastWeek) return;
+    if (e.scope === 'stock' && e.target) scoreByStock[e.target] = (scoreByStock[e.target] || 0) + (Number(e.pct) || 0);
+  });
+  // 수동 오버라이드 합산
+  const override = ((await db.doc('meta/behaviorScores').get()).data() || {})[lastWeek] || {};
+  for (const [sid, v] of Object.entries(override)) scoreByStock[sid] = (scoreByStock[sid] || 0) + (Number(v) || 0);
+
+  const results = []; let grandTotal = 0;
+  for (const [stockId, score] of Object.entries(scoreByStock)) {
+    if (!(score > 0)) continue;
+    const perShare = Math.round(score * rate);
+    if (perShare <= 0) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const hs = await db.collection('holdings').where('stockId', '==', stockId).get();
+    const payouts = []; let total = 0;
+    hs.forEach((d) => { const h = d.data(); if ((h.shares || 0) > 0) { total += perShare * h.shares; payouts.push({ userId: h.userId, amt: perShare * h.shares }); } });
+    if (payouts.length === 0) continue;
+    // eslint-disable-next-line no-await-in-loop
+    await db.runTransaction(async (tx) => {
+      const uRefs = payouts.map((p) => db.doc(`users/${p.userId}`));
+      const uSnaps = await Promise.all(uRefs.map((r) => tx.get(r)));
+      uSnaps.forEach((s, i) => { if (s.exists) tx.update(uRefs[i], { balance: (s.data().balance || 0) + payouts[i].amt }); });
+      tx.set(boardRef(), { housePool: FieldValue.increment(-total) }, { merge: true });
+      tx.set(db.collection('ledger').doc(), { type: 'weekly_dividend', stockId, weekKey: lastWeek, score, perShare, total, count: payouts.length, ts: FieldValue.serverTimestamp() });
+    });
+    grandTotal += total; results.push({ stockId, perShare, total });
+  }
+  await paidRef.set({ [lastWeek]: { at: Date.now(), grandTotal, teams: results.length } }, { merge: true });
+});

@@ -131,6 +131,17 @@ export async function getInstructorEventLog() {
   });
 }
 
+// ── ③ 주간 펀더멘탈 배당 ──────────────────────────────────
+export async function setDividendConfig({ enabled, rate }) {
+  return (await callable('setDividendConfig')({ enabled, rate })).data;
+}
+export async function setBehaviorScores({ weekKey, scores }) {
+  return (await callable('setBehaviorScores')({ weekKey, scores })).data;
+}
+export function subscribeBehaviorScores(cb) {
+  return onSnapshot(doc(getFirebase().db, 'meta', 'behaviorScores'), (snap) => cb(snap.exists() ? snap.data() : {}));
+}
+
 // ── 예약 뉴스 ───────────────────────────────────────────
 export async function scheduleNews({ text, scope, target, pct, publishAt, kind, category }) {
   return (await callable('scheduleNews')({ text, scope, target, pct, publishAt, kind, category })).data;

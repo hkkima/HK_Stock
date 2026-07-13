@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../state/AppContext.jsx';
-import { upsertStock, payDividend, adjustPrice, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice, postImpactNews, scheduleNews, cancelScheduledNews, postInstructorEvent, postInstructorEventsBatch, getInstructorEventLog } from '../data/store.js';
+import { upsertStock, payDividend, adjustPrice, mintToHouse, delistStock, setAutoNews, triggerNews, grantOption, marketReprice, postImpactNews, scheduleNews, cancelScheduledNews, postInstructorEvent, postInstructorEventsBatch, getInstructorEventLog, setDividendConfig, setBehaviorScores, subscribeBehaviorScores } from '../data/store.js';
 import { EVENT_CATEGORIES, EVENT_PRESETS, renderEventHeadline, eventCategoryMeta } from '../domain/events.js';
+import { seoulWeekKey } from '../util/week.js';
 
 function useAction() {
   const [busy, setBusy] = useState(false);
@@ -176,6 +177,66 @@ function Fundamentals() {
           onClick={() => run(() => adjustPrice(adj.stockId, Number(adj.newPrice), adj.memo), (r) => `시세 ${r.oldPrice}→${r.newPrice} (정산 ${r.delta >= 0 ? '+' : ''}${r.delta.toLocaleString()}P)`)}>
           시세 변경
         </button>
+      </div>
+      <StatusMsg msg={msg} />
+    </div>
+  );
+}
+
+// ── ③ 주간 펀더멘탈 배당 — 태도/행동 좋은 팀을 '오래 든' 보유자에게 income 보상(장기투자 유도) ──
+//   기본 OFF. 켜면 매주 월 지난주 점수(강사이벤트 자동합 + 수동 오버라이드)로 배당.
+function WeeklyDividend() {
+  const { stocks, stockBoard } = useApp();
+  const { busy, msg, run } = useAction();
+  const wk = seoulWeekKey();
+  const enabled = !!stockBoard?.dividendEnabled;
+  const rate = Number.isFinite(stockBoard?.dividendRate) ? stockBoard.dividendRate : 10;
+  const [rateInput, setRateInput] = useState(rate);
+  const [all, setAll] = useState({});
+  const [scores, setScores] = useState({}); // { [stockId]: string }
+
+  useEffect(() => subscribeBehaviorScores(setAll), []);
+  useEffect(() => { setScores(all[wk] || {}); }, [all, wk]);
+  useEffect(() => { setRateInput(rate); }, [rate]);
+
+  const saveScores = () => {
+    const clean = {};
+    for (const [k, v] of Object.entries(scores)) { const n = Number(v); if (v !== '' && Number.isFinite(n)) clean[k] = n; }
+    return setBehaviorScores({ weekKey: wk, scores: clean });
+  };
+
+  return (
+    <div className="card">
+      <h3>③ 주간 펀더멘탈 배당 (장기투자 유도)</h3>
+      <p className="muted" style={{ marginTop: 0 }}>
+        매주 <b>월 09:00</b>, 지난주 행동점수로 보유자에게 배당(하우스풀). 점수 = 강사이벤트 자동합 + 아래 수동 오버라이드.
+        주중 여유있게 적어두면 <b>차주 월요일</b>에 지급됩니다. perShare = 점수 × 배율.
+      </p>
+
+      <div className="section-title">지급 스위치 · 배율</div>
+      <div className="row">
+        <button className={enabled ? 'sell' : 'primary'} disabled={busy}
+          onClick={() => run(() => setDividendConfig({ enabled: !enabled }), (r) => `주간 배당 ${r.dividendEnabled ? 'ON' : 'OFF'}`)}>
+          {enabled ? '🟢 배당 ON (끄기)' : '⚪ 배당 OFF (켜기)'}
+        </button>
+        <input type="number" style={{ width: 80 }} value={rateInput} onChange={(e) => setRateInput(e.target.value)} />
+        <span className="muted">배율(점수×배율)</span>
+        <button className="primary" disabled={busy}
+          onClick={() => run(() => setDividendConfig({ rate: Number(rateInput) }), (r) => `배율 ${r.dividendRate}`)}>배율 저장</button>
+      </div>
+      {!enabled && <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>현재 OFF — 월요일이 와도 지급되지 않습니다(안전).</p>}
+
+      <div className="section-title" style={{ marginTop: 16 }}>이번 주({wk}) 수동 행동점수 — 양수만 배당, 0/음수는 없음(자동합과 합산)</div>
+      {stocks.map((s) => (
+        <div className="row" key={s.id} style={{ justifyContent: 'space-between', maxWidth: 320 }}>
+          <span>{s.name}</span>
+          <input type="number" style={{ width: 80 }} placeholder="0" value={scores[s.id] ?? ''}
+            onChange={(e) => setScores({ ...scores, [s.id]: e.target.value })} />
+        </div>
+      ))}
+      <div className="row" style={{ marginTop: 8 }}>
+        <button className="primary" disabled={busy}
+          onClick={() => run(saveScores, (r) => `${r.weekKey} 점수 ${r.count}팀 저장`)}>이번 주 점수 저장</button>
       </div>
       <StatusMsg msg={msg} />
     </div>
@@ -625,6 +686,7 @@ export default function AdminPage() {
       <NewStock />
       <StockList />
       <Fundamentals />
+      <WeeklyDividend />
       <InstructorEvents />
       <WeeklyBatch />
       <InstructorDashboard />
