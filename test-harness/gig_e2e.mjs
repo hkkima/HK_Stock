@@ -44,8 +44,11 @@ if (cmd === 'seed') {
   console.log('buyer:', b.data()?.balance, '| worker:', w.data()?.balance);
   const g = await db.collection('gigs').where('requesterId', '==', 'zz_gig_buyer').get();
   g.forEach((d) => console.log('gig:', d.data().status, '| escrow:', d.data().escrow, '| worker:', d.data().workerName));
+  const pr = await db.doc('profiles/zz_gig_worker').get();
+  console.log('worker profile:', pr.exists ? JSON.stringify({ skills: pr.data().skills, bio: pr.data().bio }) : '(none)');
 } else if (cmd === 'cleanup') {
   for (const id of ['zz_gig_buyer', 'zz_gig_worker']) await db.doc(`users/${id}`).delete().catch(() => {});
+  for (const id of ['zz_gig_buyer', 'zz_gig_worker']) await db.doc(`profiles/${id}`).delete().catch(() => {});
   const gigs = await db.collection('gigs').where('requesterId', 'in', ['zz_gig_buyer', 'zz_gig_worker']).get();
   for (const d of gigs.docs) await d.ref.delete();
   const help = await db.collection('helpRequests').where('requesterId', 'in', ['zz_gig_buyer', 'zz_gig_worker']).get();

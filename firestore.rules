@@ -155,5 +155,10 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
+    // 작업자 프로필(자기소개·스킬) — 공개 읽기, 쓰기는 setProfile 함수만(PIN 검증).
+    match /profiles/{userId} {
+      allow read: if true;
+      allow write: if false;
+    }
   }
 }
