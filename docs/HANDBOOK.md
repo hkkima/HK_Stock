@@ -59,8 +59,13 @@
 - **① 상장**: 종목ID·기업명·팀·시작가·발행주식수·변동성·업종·특성.
 - **상장 종목 표**: 발행수·변동성·업종·특성 인라인 편집, 거래 열기/닫기, **상폐**.
 - **② 배당 · ③ 시세조정**: 배당(하우스풀→보유자) / 시세 목표가 설정.
+- **📣 강사 이벤트**: 출결·과제·프로젝트 퀄리티·태도·팀워크·특별 프리셋 원클릭 → 팀 주가에 즉시 호재/악재 반영(동기부여·분위기). 자동 랜덤 뉴스와 분리, 피드에 `📣강사` 뱃지. 예약 발행도 가능.
+  - **🗓 주간 일괄**: 한 카테고리(예: 출결)를 여러 팀에 표에서 골라 한 번에 발행(`postInstructorEventsBatch`).
+  - **📊 팀별 대시보드**: ledger 집계로 팀별 호재/악재 횟수·순%합 표시(편애 방지·읽기 전용, 비실시간).
 - **④ 뉴스 · 발행**: 자동뉴스 ON/OFF·즉시 1건 / **뉴스 작성 + 시세 조작(전체/종목/업종/테마 + %)** / 하우스풀 발행·소각.
 - **⑤ 멤버 · 스톡옵션**: 기업 멤버 지정 / 스톡옵션 지급.
+
+> 자동 뉴스 품질을 높이려면 **뉴스 생성 Claude 루틴**(`docs/news-routine-prompt.md`) 사용 — 시장·강사 서사를 읽어 맥락 있는 헤드라인을 생성. 쓰면 ④ 자동 뉴스 토글은 OFF 권장.
 
 ### 자동(스케줄, 서울 시간)
 - **09:00 개장 / 18:00 마감**: 상태 전환, 분봉 초기화, 일봉(OHLC) 집계, 전일종가 저장.
@@ -102,6 +107,8 @@ meta/stockBoard             { housePool, news[], autoNewsEnabled }
 | `marketReprice` | 운영 | **전체 종목 ±% 일괄 조정**(통합 디플레/인플레 레버) |
 | `postNews` | 운영 | (구) 텍스트 뉴스 |
 | `postImpactNews` | 운영 | **뉴스 작성 + 대상(전체/종목/업종/테마) 시세 동시 조작** (코어 `applyImpactNews` 공용) |
+| `postInstructorEvent` | 운영 | **강사 이벤트**(출결·과제·프로젝트 등) 프리셋 → 특정 종목에 즉시 게시(`kind:'instructor'` 태깅, `applyImpactNews` 공용). 카탈로그 `functions/events.js` |
+| `postInstructorEventsBatch` | 운영 | **강사 이벤트 일괄 발행**(주간 출결/평가) — items 배열을 팀별 best-effort 적용(`runInstructorEvent` 공용) |
 | `scheduleNews` / `cancelScheduledNews` | 운영 | **뉴스 예약 등록 / 취소** (지정 시각 자동 발행) |
 | `publishScheduledNews` | 스케줄 | **매분 만기된 예약 뉴스 발행**(`applyImpactNews` 호출) |
 | `triggerNews` / `setAutoNews` | 운영 | 즉시 랜덤 뉴스 / 자동뉴스 토글 |
@@ -208,15 +215,17 @@ meta/stockBoard             { housePool, news[], autoNewsEnabled }
 
 ```
 functions/
-  index.js   콜러블·스케줄 17개 (assertAdmin/assertAuth, boardRef, appendHist)
+  index.js   콜러블·스케줄 (assertAdmin/assertAuth, boardRef, appendHist, applyImpactNews 코어)
   market.js  본드커브 순수엔진 (quoteBuy/Sell, rangeSum, priceAdjustDelta)  ← src와 동일
-  news.js    뉴스 엔진(generateNews: 개별/업종/특성 타겟)
+  news.js    자동 뉴스 엔진(generateNews: 개별/업종/특성 타겟)
+  events.js  강사 이벤트 카탈로그(프리셋·렌더 헬퍼)  ← src/domain/events.js 와 바이트 동일
   tick.js    시세 틱(tickDelta: OU 평균회귀)
 src/
   data/firebase.js   init + callable() 래퍼(에러→재로그인/일시오류 매핑) + watchAuth
   data/store.js      구독(stocks/holdings/users/board/series) + 함수 래퍼
   state/AppContext.jsx  세션·로그인·구독·인증상태(adminReauthNeeded)
   domain/market.js   ← functions/market.js와 바이트 동일
+  domain/events.js   ← functions/events.js와 바이트 동일(강사 이벤트 카탈로그)
   pages/  MarketPage(시세·차트·지수·거래) PortfolioPage(매도) NewsPage
           LeaderboardPage AdminPage(운영 6섹션) LoginPage
 firestore.rules  베팅+주식 통합본(진실원천)

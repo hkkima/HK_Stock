@@ -120,5 +120,45 @@ service cloud.firestore {
       allow read: if true;   // 학급 투명성. 민감하면 본인+운영자로 좁힐 수 있음.
       allow write: if false;
     }
+
+    // ── 코딩 문제판 (HK_Judge) ───────────────────────────────
+    //   문제 메타/예제는 공개 읽기(학습자가 봄). 채점용 전체 테스트케이스(정답)는
+    //   운영자만 읽기(problemTests). 문제 쓰기·제출·보상은 전부 Cloud Functions(Admin SDK).
+    //   ★ 이 블록은 HK_Judge/firestore.rules 와 동일해야 함 ★
+    match /problems/{problemId} {
+      allow read: if true;      // 제목·설명·템플릿·공개 예제
+      allow write: if false;    // upsertProblem / deleteProblem 함수만
+    }
+    match /problemTests/{problemId} {
+      allow read: if isAdmin();  // 정답이 담긴 채점 케이스 — 학습자에게 숨김
+      allow write: if false;
+    }
+    match /submissions/{subId} {
+      allow read: if true;       // 제출 이력(감사·본인 확인). 쓰기는 함수만.
+      allow write: if false;
+    }
+    // 최초 정답 표식(중복 보상 방지) — 함수만 생성.
+    match /solved/{solvedId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // ── 외주 게시판 (HK_Board) ───────────────────────────────
+    //   외주(gigs)·봉사(helpRequests) 모두 공개 읽기(학급 투명성).
+    //   ★모든 쓰기(등록·지원·계약·에스크로 정산·봉사 지급)는 Cloud Functions(Admin SDK)만★.
+    //   에스크로는 gigs/{id}.escrow 필드에 보관 → 클라 직접 쓰기 차단으로 무결성 보장.
+    match /gigs/{gigId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /helpRequests/{helpId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    // 작업자 프로필(자기소개·스킬) — 공개 읽기, 쓰기는 setProfile 함수만(PIN 검증).
+    match /profiles/{userId} {
+      allow read: if true;
+      allow write: if false;
+    }
   }
 }

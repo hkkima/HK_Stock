@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   marginalPrice, rangeSum, quoteBuy, quoteSell, quoteLadder, nextAvgCost,
-  holdingValue, netWorth, priceAdjustDelta,
+  holdingValue, netWorth, priceAdjustDelta, sellFee, SELL_FEE_BPS,
 } from '../domain/market.js';
 
 // base=1000, slope=2, 발행 1000주, 유통 c
@@ -88,5 +88,31 @@ describe('priceAdjustDelta (총량 보존)', () => {
   it('(새가−현재가)×유통', () => {
     expect(priceAdjustDelta(1000, 1200, 50)).toBe(10000);
     expect(priceAdjustDelta(1200, 1000, 50)).toBe(-10000);
+  });
+});
+
+describe('sellFee (매도 수수료, 결정적)', () => {
+  it('proceeds × SELL_FEE_BPS/10000, 정수 반올림', () => {
+    expect(SELL_FEE_BPS).toBe(200); // 2%
+    expect(sellFee(10000)).toBe(200);
+    expect(sellFee(3006)).toBe(60); // round(60.12)
+    expect(sellFee(0)).toBe(0);
+    expect(sellFee(-100)).toBe(0); // 음수 방지
+  });
+  it('곡선(quoteSell)은 수수료의 영향을 받지 않는다(정합 유지)', () => {
+    const s = stock(3); // 유통 3
+    const q = quoteSell(s, 3); // Σ price(0..2) = 3006
+    expect(q.proceeds).toBe(3006);
+    // 순수령 = proceeds − fee (정산 계층에서 적용)
+    expect(q.proceeds - sellFee(q.proceeds)).toBe(2946);
+  });
+  it('사고 곧바로 팔면 본전 −매도수수료(왕복 손실, 포인트 복사 불가)', () => {
+    const s0 = stock(0);
+    const buy = quoteBuy(s0, 5); // 매수 무료
+    const s1 = stock(5);
+    const sell = quoteSell(s1, 5);
+    expect(sell.proceeds).toBe(buy.cost); // 곡선은 본전
+    const net = sell.proceeds - sellFee(sell.proceeds);
+    expect(net).toBeLessThan(buy.cost); // 순 왕복은 손실
   });
 });

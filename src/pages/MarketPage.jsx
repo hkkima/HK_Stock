@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../state/AppContext.jsx';
 import { trade, subscribeSeries, getCandles } from '../data/store.js';
-import { quoteBuy, quoteSell, quoteLadder } from '../domain/market.js';
+import { quoteBuy, quoteSell, quoteLadder, sellFee, SELL_FEE_BPS } from '../domain/market.js';
 
 const LOGO_COLORS = ['#5dcaa5', '#85b7eb', '#f0997b', '#ed93b1', '#fac775', '#97c459', '#afa9ec', '#f09595'];
 function logoColor(id) {
@@ -114,7 +114,7 @@ function TradePanel({ stock }) {
       {open && q > 0 && (
         <div className="meta mono" style={{ marginTop: 6 }}>
           {buyQ ? `매수 −${buyQ.cost.toLocaleString()}P (→${buyQ.newPrice.toLocaleString()})` : '매수 불가(발행 초과)'} ·
-          {sellQ ? ` 매도 +${sellQ.proceeds.toLocaleString()}P (→${sellQ.newPrice.toLocaleString()})` : ' 매도 불가'}
+          {sellQ ? ` 매도 +${(sellQ.proceeds - sellFee(sellQ.proceeds)).toLocaleString()}P (수수료 ${(SELL_FEE_BPS / 100)}%↓ →${sellQ.newPrice.toLocaleString()})` : ' 매도 불가'}
         </div>
       )}
       {!open && <p className="muted" style={{ marginTop: 6 }}>장 마감 상태입니다. 09:00~18:00 자동 개장.</p>}
@@ -268,6 +268,7 @@ export default function MarketPage() {
             const up = n.polarity === 'good'; const down = n.polarity === 'bad';
             return (
               <div className="news-item" key={i}>
+                {n.kind === 'instructor' && <span className="evt-badge">📣 강사</span>}
                 {(up || down) && <span className={up ? 'up' : 'down'} style={{ fontWeight: 700, marginRight: 4 }}>{up ? '▲' : '▼'}</span>}
                 {n.badge && <span className="co-tag" style={{ marginRight: 6 }}>{n.badge}</span>}
                 {n.text}
