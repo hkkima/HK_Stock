@@ -45,7 +45,7 @@ export default function App() {
 
       <div className="wrap">
         {adminReauthNeeded && (
-          <div className="banner" style={{ background: '#3a0a0a', borderColor: 'var(--down)', color: 'var(--down)' }}>
+          <div className="banner danger">
             🔑 운영자 구글 인증이 만료됐습니다(발행·배당·뉴스 등 운영자 동작이 안 됩니다).
             <button className="primary" style={{ marginLeft: 8 }} onClick={reauth}>Google로 다시 로그인</button>
           </div>
