@@ -593,18 +593,23 @@ function requirePin(user, pinHash) {
 }
 
 // ── 외주 등록: 요청자 지갑 → 에스크로 예치(등록 즉시) ──────────
+//   targetId 지정 시 = 지정 의뢰(특정 수강생만 수락/거절 가능, 공개 지원 불가).
 export const postGig = onCall(async (req) => {
   assertAuth(req);
-  const { userId, pinHash, title, desc, deadline, reward } = req.data || {};
+  const { userId, pinHash, title, desc, deadline, reward, targetId } = req.data || {};
   const r = Math.floor(Number(reward));
   if (!userId) throw new HttpsError('invalid-argument', 'userId가 필요합니다.');
   if (!title || !String(title).trim()) throw new HttpsError('invalid-argument', '제목이 필요합니다.');
   if (!Number.isInteger(r) || r <= 0) throw new HttpsError('invalid-argument', '보상은 1 이상 정수여야 합니다.');
+  const tgt = targetId ? String(targetId).trim() : null;
+  if (tgt && tgt === userId) throw new HttpsError('invalid-argument', '자기 자신에게는 지정 의뢰할 수 없습니다.');
 
   return db.runTransaction(async (tx) => {
     const uRef = db.doc(`users/${userId}`);
-    const uSnap = await tx.get(uRef);
+    const tRef = tgt ? db.doc(`users/${tgt}`) : null;
+    const [uSnap, tSnap] = await Promise.all([tx.get(uRef), tRef ? tx.get(tRef) : Promise.resolve(null)]);
     if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    if (tgt && !(tSnap && tSnap.exists)) throw new HttpsError('not-found', '지정한 수강생을 찾을 수 없습니다.');
     const user = uSnap.data();
     requirePin(user, pinHash);
     const balance = user.balance || 0;
@@ -618,10 +623,56 @@ export const postGig = onCall(async (req) => {
       deadline: deadline ? String(deadline).trim() : null,
       reward: r, escrow: r, status: 'open',
       applicants: [], workerId: null, workerName: null,
+      targetId: tgt, targetName: tgt ? (tSnap.data().name || tgt) : null,
       createdAt: FieldValue.serverTimestamp(),
     });
     tx.set(db.collection('ledger').doc(), { type: 'gig_post', gigId: gRef.id, userId, delta: -r, ts: FieldValue.serverTimestamp() });
     return { id: gRef.id, reward: r, newBalance: balance - r };
+  });
+});
+
+// ── 지정 의뢰: 지목된 수강생이 수락 → 바로 계약 성립 ─────────
+export const acceptGig = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, gigId } = req.data || {};
+  if (!userId || !gigId) throw new HttpsError('invalid-argument', 'userId/gigId 누락.');
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const gRef = db.doc(`gigs/${gigId}`);
+    const [uSnap, gSnap] = await Promise.all([tx.get(uRef), tx.get(gRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!gSnap.exists) throw new HttpsError('not-found', '외주를 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.targetId !== userId) throw new HttpsError('permission-denied', '지정된 수강생만 수락할 수 있습니다.');
+    if (g.status !== 'open') throw new HttpsError('failed-precondition', '수락할 수 있는 상태가 아닙니다.');
+    tx.update(gRef, { workerId: userId, workerName: uSnap.data().name || userId, status: 'contracted', awardedAt: FieldValue.serverTimestamp() });
+    return { ok: true };
+  });
+});
+
+// ── 지정 의뢰: 지목된 수강생이 거절 → 요청자에게 에스크로 환불 ─
+export const declineGig = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, gigId } = req.data || {};
+  if (!userId || !gigId) throw new HttpsError('invalid-argument', 'userId/gigId 누락.');
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const gRef = db.doc(`gigs/${gigId}`);
+    const [uSnap, gSnap] = await Promise.all([tx.get(uRef), tx.get(gRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!gSnap.exists) throw new HttpsError('not-found', '외주를 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.targetId !== userId) throw new HttpsError('permission-denied', '지정된 수강생만 거절할 수 있습니다.');
+    if (g.status !== 'open') throw new HttpsError('failed-precondition', '거절할 수 있는 상태가 아닙니다.');
+    const refund = g.escrow || 0;
+    const rRef = db.doc(`users/${g.requesterId}`);
+    const rSnap = await tx.get(rRef);
+    if (rSnap.exists) tx.update(rRef, { balance: (rSnap.data().balance || 0) + refund });
+    tx.update(gRef, { escrow: 0, status: 'declined', closedAt: FieldValue.serverTimestamp() });
+    tx.set(db.collection('ledger').doc(), { type: 'gig_declined', gigId, userId: g.requesterId, delta: refund, ts: FieldValue.serverTimestamp() });
+    return { ok: true, refund };
   });
 });
 
@@ -638,6 +689,7 @@ export const applyGig = onCall(async (req) => {
     requirePin(uSnap.data(), pinHash);
     if (!gSnap.exists) throw new HttpsError('not-found', '외주를 찾을 수 없습니다.');
     const g = gSnap.data();
+    if (g.targetId) throw new HttpsError('failed-precondition', '지정 의뢰는 지목된 수강생만 수락할 수 있습니다.');
     if (g.status !== 'open') throw new HttpsError('failed-precondition', '지원할 수 없는 상태입니다.');
     if (g.requesterId === userId) throw new HttpsError('failed-precondition', '본인 외주에는 지원할 수 없습니다.');
     if (Array.isArray(g.applicants) && g.applicants.includes(userId)) throw new HttpsError('failed-precondition', '이미 지원했습니다.');
@@ -943,6 +995,253 @@ export const setProfile = onCall(async (req) => {
     updatedAt: FieldValue.serverTimestamp(),
   }, { merge: true });
   return { ok: true };
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  테스터 모집(recruit) — 한 의뢰가 여러 명을 모집(게임 테스트·피드백 등).
+//   인당 보상 rewardEach × 정원 slots 만큼 등록 즉시 에스크로 예치.
+//   흐름: 지원(applyRecruit) → 요청자 선발(selectTester) → 테스터 제출(submitRecruit)
+//        → 요청자 승인 시 인당 지급(approveTester) / 반려(rejectTester).
+//        마감(closeRecruit) 시 미지급 에스크로는 요청자에게 환불.
+//   에스크로는 recruits/{id}.escrow 에 보관 → 지갑↔문서 이동뿐이라 총량 보존.
+// ═══════════════════════════════════════════════════════════════
+
+// 정원 차지 중인 테스터 수(반려 제외).
+function filledSlots(testers) {
+  return (Array.isArray(testers) ? testers : []).filter((t) => t.status !== 'rejected').length;
+}
+
+export const postRecruit = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, title, desc, deadline, rewardEach, slots } = req.data || {};
+  const re = Math.floor(Number(rewardEach));
+  const sl = Math.floor(Number(slots));
+  if (!userId) throw new HttpsError('invalid-argument', 'userId가 필요합니다.');
+  if (!title || !String(title).trim()) throw new HttpsError('invalid-argument', '제목이 필요합니다.');
+  if (!Number.isInteger(re) || re <= 0) throw new HttpsError('invalid-argument', '인당 보상은 1 이상 정수여야 합니다.');
+  if (!Number.isInteger(sl) || sl <= 0 || sl > 100) throw new HttpsError('invalid-argument', '모집 정원은 1~100명이어야 합니다.');
+  const total = re * sl;
+
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const uSnap = await tx.get(uRef);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    const user = uSnap.data();
+    requirePin(user, pinHash);
+    const balance = user.balance || 0;
+    if (balance < total) throw new HttpsError('failed-precondition', `잔액이 부족합니다(총 ${total.toLocaleString()}P 예치 필요).`);
+
+    const rRef = db.collection('recruits').doc();
+    tx.update(uRef, { balance: balance - total });
+    tx.set(rRef, {
+      requesterId: userId, requesterName: user.name || userId,
+      title: String(title).trim(), desc: String(desc || '').trim(),
+      deadline: deadline ? String(deadline).trim() : null,
+      rewardEach: re, slots: sl, escrow: total, status: 'open',
+      applicants: [], testers: [],
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    tx.set(db.collection('ledger').doc(), { type: 'recruit_post', recruitId: rRef.id, userId, delta: -total, ts: FieldValue.serverTimestamp() });
+    return { id: rRef.id, total, newBalance: balance - total };
+  });
+});
+
+export const applyRecruit = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, recruitId } = req.data || {};
+  if (!userId || !recruitId) throw new HttpsError('invalid-argument', 'userId/recruitId 누락.');
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const rRef = db.doc(`recruits/${recruitId}`);
+    const [uSnap, rSnap] = await Promise.all([tx.get(uRef), tx.get(rRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!rSnap.exists) throw new HttpsError('not-found', '모집을 찾을 수 없습니다.');
+    const rc = rSnap.data();
+    if (rc.status !== 'open') throw new HttpsError('failed-precondition', '지원할 수 없는 상태입니다.');
+    if (rc.requesterId === userId) throw new HttpsError('failed-precondition', '본인 모집에는 지원할 수 없습니다.');
+    if ((rc.applicants || []).includes(userId)) throw new HttpsError('failed-precondition', '이미 지원했습니다.');
+    if ((rc.testers || []).some((t) => t.userId === userId && t.status !== 'rejected')) throw new HttpsError('failed-precondition', '이미 선발된 테스터입니다.');
+    tx.update(rRef, { applicants: FieldValue.arrayUnion(userId) });
+    return { ok: true };
+  });
+});
+
+export const cancelRecruitApplication = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, recruitId } = req.data || {};
+  if (!userId || !recruitId) throw new HttpsError('invalid-argument', 'userId/recruitId 누락.');
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const rRef = db.doc(`recruits/${recruitId}`);
+    const [uSnap, rSnap] = await Promise.all([tx.get(uRef), tx.get(rRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!rSnap.exists) throw new HttpsError('not-found', '모집을 찾을 수 없습니다.');
+    tx.update(rRef, { applicants: FieldValue.arrayRemove(userId) });
+    return { ok: true };
+  });
+});
+
+// 요청자: 지원자 중 테스터 선발(정원 내).
+export const selectTester = onCall(async (req) => {
+  assertAuth(req);
+  const { requesterId, pinHash, recruitId, testerId } = req.data || {};
+  if (!requesterId || !recruitId || !testerId) throw new HttpsError('invalid-argument', 'requesterId/recruitId/testerId 누락.');
+  return db.runTransaction(async (tx) => {
+    const rqRef = db.doc(`users/${requesterId}`);
+    const tRef = db.doc(`users/${testerId}`);
+    const rRef = db.doc(`recruits/${recruitId}`);
+    const [rqSnap, tSnap, rSnap] = await Promise.all([tx.get(rqRef), tx.get(tRef), tx.get(rRef)]);
+    if (!rqSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(rqSnap.data(), pinHash);
+    if (!rSnap.exists) throw new HttpsError('not-found', '모집을 찾을 수 없습니다.');
+    const rc = rSnap.data();
+    if (rc.requesterId !== requesterId) throw new HttpsError('permission-denied', '본인 모집만 선발할 수 있습니다.');
+    if (rc.status !== 'open') throw new HttpsError('failed-precondition', '모집이 닫혀 있습니다.');
+    if (!(rc.applicants || []).includes(testerId)) throw new HttpsError('failed-precondition', '지원자 중에서만 선발할 수 있습니다.');
+    if (filledSlots(rc.testers) >= rc.slots) throw new HttpsError('failed-precondition', '모집 정원이 찼습니다.');
+    const testers = [...(rc.testers || []), { userId: testerId, name: (tSnap.exists ? tSnap.data().name : null) || testerId, status: 'selected', note: '' }];
+    const applicants = (rc.applicants || []).filter((a) => a !== testerId);
+    tx.update(rRef, { testers, applicants });
+    return { ok: true };
+  });
+});
+
+// 테스터: 피드백 제출(선발된 사람만).
+export const submitRecruit = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, recruitId, note } = req.data || {};
+  if (!userId || !recruitId) throw new HttpsError('invalid-argument', 'userId/recruitId 누락.');
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const rRef = db.doc(`recruits/${recruitId}`);
+    const [uSnap, rSnap] = await Promise.all([tx.get(uRef), tx.get(rRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!rSnap.exists) throw new HttpsError('not-found', '모집을 찾을 수 없습니다.');
+    const rc = rSnap.data();
+    const testers = [...(rc.testers || [])];
+    const i = testers.findIndex((t) => t.userId === userId);
+    if (i < 0) throw new HttpsError('failed-precondition', '선발된 테스터가 아닙니다.');
+    if (testers[i].status !== 'selected') throw new HttpsError('failed-precondition', '제출할 수 있는 상태가 아닙니다.');
+    testers[i] = { ...testers[i], status: 'submitted', note: String(note || '').trim().slice(0, 1000), submittedAt: Date.now() };
+    tx.update(rRef, { testers });
+    return { ok: true };
+  });
+});
+
+// 요청자: 테스터 제출 승인 → 인당 보상 지급.
+export const approveTester = onCall(async (req) => {
+  assertAuth(req);
+  const { requesterId, pinHash, recruitId, testerId } = req.data || {};
+  if (!requesterId || !recruitId || !testerId) throw new HttpsError('invalid-argument', 'requesterId/recruitId/testerId 누락.');
+  return db.runTransaction(async (tx) => {
+    const rqRef = db.doc(`users/${requesterId}`);
+    const tRef = db.doc(`users/${testerId}`);
+    const rRef = db.doc(`recruits/${recruitId}`);
+    const [rqSnap, tSnap, rSnap] = await Promise.all([tx.get(rqRef), tx.get(tRef), tx.get(rRef)]);
+    if (!rqSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(rqSnap.data(), pinHash);
+    if (!rSnap.exists) throw new HttpsError('not-found', '모집을 찾을 수 없습니다.');
+    const rc = rSnap.data();
+    if (rc.requesterId !== requesterId) throw new HttpsError('permission-denied', '본인 모집만 승인할 수 있습니다.');
+    const testers = [...(rc.testers || [])];
+    const i = testers.findIndex((t) => t.userId === testerId);
+    if (i < 0) throw new HttpsError('not-found', '테스터를 찾을 수 없습니다.');
+    if (testers[i].status !== 'submitted') throw new HttpsError('failed-precondition', '제출 완료된 테스터만 승인할 수 있습니다.');
+    const pay = rc.rewardEach || 0;
+    if ((rc.escrow || 0) < pay) throw new HttpsError('failed-precondition', '에스크로 잔액이 부족합니다.');
+    if (tSnap.exists) tx.update(tRef, { balance: (tSnap.data().balance || 0) + pay });
+    testers[i] = { ...testers[i], status: 'approved' };
+    tx.update(rRef, { testers, escrow: (rc.escrow || 0) - pay });
+    tx.set(db.collection('ledger').doc(), { type: 'recruit_pay', recruitId, userId: testerId, delta: pay, ts: FieldValue.serverTimestamp() });
+    return { ok: true, pay };
+  });
+});
+
+// 요청자: 테스터 반려(지급 없음, 슬롯 반환).
+export const rejectTester = onCall(async (req) => {
+  assertAuth(req);
+  const { requesterId, pinHash, recruitId, testerId } = req.data || {};
+  if (!requesterId || !recruitId || !testerId) throw new HttpsError('invalid-argument', 'requesterId/recruitId/testerId 누락.');
+  return db.runTransaction(async (tx) => {
+    const rqRef = db.doc(`users/${requesterId}`);
+    const rRef = db.doc(`recruits/${recruitId}`);
+    const [rqSnap, rSnap] = await Promise.all([tx.get(rqRef), tx.get(rRef)]);
+    if (!rqSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(rqSnap.data(), pinHash);
+    if (!rSnap.exists) throw new HttpsError('not-found', '모집을 찾을 수 없습니다.');
+    const rc = rSnap.data();
+    if (rc.requesterId !== requesterId) throw new HttpsError('permission-denied', '본인 모집만 반려할 수 있습니다.');
+    const testers = [...(rc.testers || [])];
+    const i = testers.findIndex((t) => t.userId === testerId);
+    if (i < 0) throw new HttpsError('not-found', '테스터를 찾을 수 없습니다.');
+    if (!['selected', 'submitted'].includes(testers[i].status)) throw new HttpsError('failed-precondition', '반려할 수 있는 상태가 아닙니다.');
+    testers[i] = { ...testers[i], status: 'rejected' };
+    tx.update(rRef, { testers });
+    return { ok: true };
+  });
+});
+
+// 요청자: 모집 마감 → 미지급 에스크로 환불.
+export const closeRecruit = onCall(async (req) => {
+  assertAuth(req);
+  const { requesterId, pinHash, recruitId } = req.data || {};
+  if (!requesterId || !recruitId) throw new HttpsError('invalid-argument', 'requesterId/recruitId 누락.');
+  return db.runTransaction(async (tx) => {
+    const rqRef = db.doc(`users/${requesterId}`);
+    const rRef = db.doc(`recruits/${recruitId}`);
+    const [rqSnap, rSnap] = await Promise.all([tx.get(rqRef), tx.get(rRef)]);
+    if (!rqSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(rqSnap.data(), pinHash);
+    if (!rSnap.exists) throw new HttpsError('not-found', '모집을 찾을 수 없습니다.');
+    const rc = rSnap.data();
+    if (rc.requesterId !== requesterId) throw new HttpsError('permission-denied', '본인 모집만 마감할 수 있습니다.');
+    if (rc.status !== 'open') throw new HttpsError('failed-precondition', '이미 마감된 모집입니다.');
+    const refund = rc.escrow || 0;
+    if (refund > 0) tx.update(rqRef, { balance: (rqSnap.data().balance || 0) + refund });
+    tx.update(rRef, { escrow: 0, status: 'closed', closedAt: FieldValue.serverTimestamp() });
+    if (refund > 0) tx.set(db.collection('ledger').doc(), { type: 'recruit_close', recruitId, userId: requesterId, delta: refund, ts: FieldValue.serverTimestamp() });
+    return { ok: true, refund };
+  });
+});
+
+// 강사 중재: 특정 테스터 강제 지급(pay) 또는 남은 에스크로 요청자 환불 후 마감(refund).
+export const resolveRecruit = onCall(async (req) => {
+  assertAdmin(req);
+  const { recruitId, testerId, outcome } = req.data || {};
+  if (!recruitId) throw new HttpsError('invalid-argument', 'recruitId가 필요합니다.');
+  if (outcome !== 'pay' && outcome !== 'refund') throw new HttpsError('invalid-argument', "outcome은 'pay' 또는 'refund'.");
+  return db.runTransaction(async (tx) => {
+    const rRef = db.doc(`recruits/${recruitId}`);
+    const rSnap = await tx.get(rRef);
+    if (!rSnap.exists) throw new HttpsError('not-found', '모집을 찾을 수 없습니다.');
+    const rc = rSnap.data();
+    if (outcome === 'pay') {
+      if (!testerId) throw new HttpsError('invalid-argument', 'testerId가 필요합니다.');
+      const testers = [...(rc.testers || [])];
+      const i = testers.findIndex((t) => t.userId === testerId);
+      if (i < 0) throw new HttpsError('not-found', '테스터를 찾을 수 없습니다.');
+      if (testers[i].status === 'approved') throw new HttpsError('failed-precondition', '이미 지급된 테스터입니다.');
+      const pay = rc.rewardEach || 0;
+      if ((rc.escrow || 0) < pay) throw new HttpsError('failed-precondition', '에스크로 잔액이 부족합니다.');
+      const tRef = db.doc(`users/${testerId}`);
+      const tSnap = await tx.get(tRef);
+      if (tSnap.exists) tx.update(tRef, { balance: (tSnap.data().balance || 0) + pay });
+      testers[i] = { ...testers[i], status: 'approved' };
+      tx.update(rRef, { testers, escrow: (rc.escrow || 0) - pay });
+      tx.set(db.collection('ledger').doc(), { type: 'recruit_resolve_pay', recruitId, userId: testerId, delta: pay, ts: FieldValue.serverTimestamp() });
+      return { ok: true, outcome, pay };
+    }
+    const refund = rc.escrow || 0;
+    const rqRef = db.doc(`users/${rc.requesterId}`);
+    const rqSnap = await tx.get(rqRef);
+    if (rqSnap.exists && refund > 0) tx.update(rqRef, { balance: (rqSnap.data().balance || 0) + refund });
+    tx.update(rRef, { escrow: 0, status: 'closed', closedAt: FieldValue.serverTimestamp() });
+    if (refund > 0) tx.set(db.collection('ledger').doc(), { type: 'recruit_resolve_refund', recruitId, userId: rc.requesterId, delta: refund, ts: FieldValue.serverTimestamp() });
+    return { ok: true, outcome, refund };
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════

@@ -160,5 +160,10 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
+    // 테스터 모집(다수 인원) — 공개 읽기, 쓰기는 함수만. 에스크로는 recruits/{id}.escrow.
+    match /recruits/{recruitId} {
+      allow read: if true;
+      allow write: if false;
+    }
   }
 }

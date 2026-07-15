@@ -53,6 +53,8 @@ if (cmd === 'seed') {
   for (const d of gigs.docs) await d.ref.delete();
   const help = await db.collection('helpRequests').where('requesterId', 'in', ['zz_gig_buyer', 'zz_gig_worker']).get();
   for (const d of help.docs) await d.ref.delete();
+  const rec = await db.collection('recruits').where('requesterId', 'in', ['zz_gig_buyer', 'zz_gig_worker']).get();
+  for (const d of rec.docs) await d.ref.delete();
   const led = await db.collection('ledger').where('userId', 'in', ['zz_gig_buyer', 'zz_gig_worker']).get();
   for (const d of led.docs) await d.ref.delete();
   console.log(`cleanup done (gigs ${gigs.size}, help ${help.size}, ledger ${led.size})`);
