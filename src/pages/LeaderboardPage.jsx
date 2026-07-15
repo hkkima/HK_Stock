@@ -35,7 +35,7 @@ export default function LeaderboardPage() {
             </thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={r.id} style={r.id === session.userId ? { background: 'var(--panel2)' } : undefined}>
+                <tr key={r.id} className={r.id === session.userId ? 'me-row' : undefined}>
                   <td className="mono">{i + 1}</td>
                   <td>{r.name}{r.id === session.userId && <span className="muted"> (나)</span>}</td>
                   <td className="num mono">{r.cash.toLocaleString()}</td>

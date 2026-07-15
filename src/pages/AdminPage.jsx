@@ -495,7 +495,7 @@ function NewsAndMint() {
 
       <div className="section-title">자동 뉴스(테마주) — 장중 랜덤 2~3회/일, 호재·악재 ±3~8% 시세 넛지.</div>
       <div className="row">
-        <span className="pill" style={{ color: autoOn ? 'var(--open)' : 'var(--muted)', borderColor: autoOn ? 'var(--open)' : 'var(--line)' }}>
+        <span className="pill" style={{ color: autoOn ? 'var(--positive)' : 'var(--ink-secondary)', borderColor: autoOn ? 'var(--positive)' : 'var(--line)' }}>
           {autoOn ? '자동 ON' : '자동 OFF'}
         </span>
         <button className={autoOn ? 'sell' : 'buy'} disabled={busy}

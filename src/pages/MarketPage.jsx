@@ -32,12 +32,12 @@ function BigChart({ values, prev }) {
   const line = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)} ${y(p).toFixed(1)}`).join(' ');
   const area = `${line} L ${x(pts.length - 1).toFixed(1)} ${H - pad} L ${x(0).toFixed(1)} ${H - pad} Z`;
   const up = pts[pts.length - 1] >= (prev ?? pts[0]);
-  const color = range === 0 ? 'var(--muted)' : (up ? 'var(--up)' : 'var(--down)');
+  const color = range === 0 ? 'var(--ink-secondary)' : (up ? 'var(--gain)' : 'var(--loss)');
   return (
     <svg className="bigchart" viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="시세 차트">
       {prev != null && (
         <>
-          <line x1={pad} x2={W - pad} y1={y(prev)} y2={y(prev)} stroke="var(--muted)" strokeWidth="1" strokeDasharray="4 4" />
+          <line x1={pad} x2={W - pad} y1={y(prev)} y2={y(prev)} stroke="var(--ink-secondary)" strokeWidth="1" strokeDasharray="4 4" />
           <text x={W - pad} y={y(prev) - 4} textAnchor="end" className="caxis">전일 {prev.toLocaleString()}</text>
         </>
       )}
