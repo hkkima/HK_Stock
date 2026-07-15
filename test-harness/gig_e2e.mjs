@@ -26,7 +26,8 @@ const cmd = process.argv[2] || 'total';
 if (cmd === 'seed') {
   await db.doc('users/zz_gig_buyer').set({ name: 'zzGigBuyer', pinHash: hashPin('1111'), balance: 5000 });
   await db.doc('users/zz_gig_worker').set({ name: 'zzGigWorker', pinHash: hashPin('2222'), balance: 0 });
-  console.log('seeded zzGigBuyer(5000P, PIN 1111) / zzGigWorker(0P, PIN 2222)');
+  await db.doc('users/zz_gig_co').set({ name: 'zzGigCo', pinHash: hashPin('3333'), balance: 3000 });
+  console.log('seeded zzGigBuyer(5000P, 1111) / zzGigWorker(0P, 2222) / zzGigCo(3000P, 3333)');
 } else if (cmd === 'total') {
   const users = await db.collection('users').get();
   let wallets = 0; users.forEach((d) => { wallets += d.data().balance || 0; });
@@ -47,15 +48,15 @@ if (cmd === 'seed') {
   const pr = await db.doc('profiles/zz_gig_worker').get();
   console.log('worker profile:', pr.exists ? JSON.stringify({ skills: pr.data().skills, bio: pr.data().bio }) : '(none)');
 } else if (cmd === 'cleanup') {
-  for (const id of ['zz_gig_buyer', 'zz_gig_worker']) await db.doc(`users/${id}`).delete().catch(() => {});
-  for (const id of ['zz_gig_buyer', 'zz_gig_worker']) await db.doc(`profiles/${id}`).delete().catch(() => {});
-  const gigs = await db.collection('gigs').where('requesterId', 'in', ['zz_gig_buyer', 'zz_gig_worker']).get();
+  for (const id of ['zz_gig_buyer', 'zz_gig_worker', 'zz_gig_co']) await db.doc(`users/${id}`).delete().catch(() => {});
+  for (const id of ['zz_gig_buyer', 'zz_gig_worker', 'zz_gig_co']) await db.doc(`profiles/${id}`).delete().catch(() => {});
+  const gigs = await db.collection('gigs').where('requesterId', 'in', ['zz_gig_buyer', 'zz_gig_worker', 'zz_gig_co']).get();
   for (const d of gigs.docs) await d.ref.delete();
-  const help = await db.collection('helpRequests').where('requesterId', 'in', ['zz_gig_buyer', 'zz_gig_worker']).get();
+  const help = await db.collection('helpRequests').where('requesterId', 'in', ['zz_gig_buyer', 'zz_gig_worker', 'zz_gig_co']).get();
   for (const d of help.docs) await d.ref.delete();
-  const rec = await db.collection('recruits').where('requesterId', 'in', ['zz_gig_buyer', 'zz_gig_worker']).get();
+  const rec = await db.collection('recruits').where('requesterId', 'in', ['zz_gig_buyer', 'zz_gig_worker', 'zz_gig_co']).get();
   for (const d of rec.docs) await d.ref.delete();
-  const led = await db.collection('ledger').where('userId', 'in', ['zz_gig_buyer', 'zz_gig_worker']).get();
+  const led = await db.collection('ledger').where('userId', 'in', ['zz_gig_buyer', 'zz_gig_worker', 'zz_gig_co']).get();
   for (const d of led.docs) await d.ref.delete();
   console.log(`cleanup done (gigs ${gigs.size}, help ${help.size}, ledger ${led.size})`);
 }

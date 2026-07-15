@@ -1011,9 +1011,34 @@ function filledSlots(testers) {
   return (Array.isArray(testers) ? testers : []).filter((t) => t.status !== 'rejected').length;
 }
 
+// 남은 에스크로를 후원자(sponsors)에게 낸 비율대로 환불(트랜잭션 내). ★모든 읽기는 쓰기 전에★.
+//   반환값은 ledger 기록용 요약. 나머지(반올림 잔액)는 첫 후원자(등록자)에게 몰아줘 총량 정확 보존.
+async function refundSponsorsInTx(tx, rc) {
+  const sponsors = Array.isArray(rc.sponsors) && rc.sponsors.length
+    ? rc.sponsors
+    : [{ userId: rc.requesterId, name: rc.requesterName, contributed: rc.escrow || 0 }];
+  const remaining = rc.escrow || 0;
+  if (remaining <= 0) return [];
+  const totalContrib = sponsors.reduce((s, x) => s + (x.contributed || 0), 0) || 1;
+  const refs = sponsors.map((s) => db.doc(`users/${s.userId}`));
+  const snaps = await Promise.all(refs.map((r) => tx.get(r)));
+  let allocated = 0;
+  const shares = sponsors.map((s) => { const v = Math.floor(remaining * (s.contributed || 0) / totalContrib); allocated += v; return v; });
+  shares[0] += remaining - allocated; // 반올림 잔액은 등록자에게
+  const out = [];
+  snaps.forEach((snap, i) => {
+    if (snap.exists && shares[i] > 0) {
+      tx.update(refs[i], { balance: (snap.data().balance || 0) + shares[i] });
+      out.push({ userId: sponsors[i].userId, amount: shares[i] });
+    }
+  });
+  return out;
+}
+
+// 공동 의뢰(포인트 나눠 내기): 등록자는 자기 부담금(contribution)만 넣고, 나머지는 coFundRecruit 로 모금.
 export const postRecruit = onCall(async (req) => {
   assertAuth(req);
-  const { userId, pinHash, title, desc, deadline, rewardEach, slots } = req.data || {};
+  const { userId, pinHash, title, desc, deadline, rewardEach, slots, contribution } = req.data || {};
   const re = Math.floor(Number(rewardEach));
   const sl = Math.floor(Number(slots));
   if (!userId) throw new HttpsError('invalid-argument', 'userId가 필요합니다.');
@@ -1021,6 +1046,11 @@ export const postRecruit = onCall(async (req) => {
   if (!Number.isInteger(re) || re <= 0) throw new HttpsError('invalid-argument', '인당 보상은 1 이상 정수여야 합니다.');
   if (!Number.isInteger(sl) || sl <= 0 || sl > 100) throw new HttpsError('invalid-argument', '모집 정원은 1~100명이어야 합니다.');
   const total = re * sl;
+  // 부담금 미지정이면 등록자가 전액 부담(단독 의뢰). 지정 시 1 ~ 총액 범위.
+  const contrib = contribution == null || contribution === '' ? total : Math.floor(Number(contribution));
+  if (!Number.isInteger(contrib) || contrib <= 0 || contrib > total) {
+    throw new HttpsError('invalid-argument', `내 부담금은 1 ~ 총액(${total.toLocaleString()}P) 범위여야 합니다.`);
+  }
 
   return db.runTransaction(async (tx) => {
     const uRef = db.doc(`users/${userId}`);
@@ -1029,20 +1059,56 @@ export const postRecruit = onCall(async (req) => {
     const user = uSnap.data();
     requirePin(user, pinHash);
     const balance = user.balance || 0;
-    if (balance < total) throw new HttpsError('failed-precondition', `잔액이 부족합니다(총 ${total.toLocaleString()}P 예치 필요).`);
+    if (balance < contrib) throw new HttpsError('failed-precondition', `잔액이 부족합니다(${contrib.toLocaleString()}P 부담).`);
 
     const rRef = db.collection('recruits').doc();
-    tx.update(uRef, { balance: balance - total });
+    tx.update(uRef, { balance: balance - contrib });
     tx.set(rRef, {
       requesterId: userId, requesterName: user.name || userId,
       title: String(title).trim(), desc: String(desc || '').trim(),
       deadline: deadline ? String(deadline).trim() : null,
-      rewardEach: re, slots: sl, escrow: total, status: 'open',
+      rewardEach: re, slots: sl, fundTarget: total, escrow: contrib, status: 'open',
+      sponsors: [{ userId, name: user.name || userId, contributed: contrib }],
       applicants: [], testers: [],
       createdAt: FieldValue.serverTimestamp(),
     });
-    tx.set(db.collection('ledger').doc(), { type: 'recruit_post', recruitId: rRef.id, userId, delta: -total, ts: FieldValue.serverTimestamp() });
-    return { id: rRef.id, total, newBalance: balance - total };
+    tx.set(db.collection('ledger').doc(), { type: 'recruit_post', recruitId: rRef.id, userId, delta: -contrib, ts: FieldValue.serverTimestamp() });
+    return { id: rRef.id, total, contributed: contrib, newBalance: balance - contrib };
+  });
+});
+
+// 공동 부담 참여: 다른 수강생이 에스크로 풀에 포인트를 보탠다(목표 초과 불가).
+export const coFundRecruit = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, recruitId, amount } = req.data || {};
+  const amt = Math.floor(Number(amount));
+  if (!userId || !recruitId) throw new HttpsError('invalid-argument', 'userId/recruitId 누락.');
+  if (!Number.isInteger(amt) || amt <= 0) throw new HttpsError('invalid-argument', '부담금은 1 이상 정수여야 합니다.');
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const rRef = db.doc(`recruits/${recruitId}`);
+    const [uSnap, rSnap] = await Promise.all([tx.get(uRef), tx.get(rRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!rSnap.exists) throw new HttpsError('not-found', '모집을 찾을 수 없습니다.');
+    const rc = rSnap.data();
+    if (rc.status !== 'open') throw new HttpsError('failed-precondition', '마감된 모집입니다.');
+    const target = rc.fundTarget || (rc.rewardEach * rc.slots);
+    const cur = rc.escrow || 0;
+    if (cur >= target) throw new HttpsError('failed-precondition', '이미 목표 금액이 다 모였습니다.');
+    if (cur + amt > target) throw new HttpsError('failed-precondition', `남은 모금액은 ${(target - cur).toLocaleString()}P 입니다.`);
+    const balance = uSnap.data().balance || 0;
+    if (balance < amt) throw new HttpsError('failed-precondition', '잔액이 부족합니다.');
+
+    const sponsors = [...(rc.sponsors || [])];
+    const i = sponsors.findIndex((s) => s.userId === userId);
+    if (i >= 0) sponsors[i] = { ...sponsors[i], contributed: (sponsors[i].contributed || 0) + amt };
+    else sponsors.push({ userId, name: uSnap.data().name || userId, contributed: amt });
+
+    tx.update(uRef, { balance: balance - amt });
+    tx.update(rRef, { escrow: cur + amt, sponsors });
+    tx.set(db.collection('ledger').doc(), { type: 'recruit_cofund', recruitId, userId, delta: -amt, ts: FieldValue.serverTimestamp() });
+    return { ok: true, amount: amt, escrow: cur + amt, target };
   });
 });
 
@@ -1200,10 +1266,10 @@ export const closeRecruit = onCall(async (req) => {
     if (rc.requesterId !== requesterId) throw new HttpsError('permission-denied', '본인 모집만 마감할 수 있습니다.');
     if (rc.status !== 'open') throw new HttpsError('failed-precondition', '이미 마감된 모집입니다.');
     const refund = rc.escrow || 0;
-    if (refund > 0) tx.update(rqRef, { balance: (rqSnap.data().balance || 0) + refund });
+    const refunds = await refundSponsorsInTx(tx, rc); // 후원자에게 비율 환불(공동 의뢰)
     tx.update(rRef, { escrow: 0, status: 'closed', closedAt: FieldValue.serverTimestamp() });
-    if (refund > 0) tx.set(db.collection('ledger').doc(), { type: 'recruit_close', recruitId, userId: requesterId, delta: refund, ts: FieldValue.serverTimestamp() });
-    return { ok: true, refund };
+    if (refund > 0) tx.set(db.collection('ledger').doc(), { type: 'recruit_close', recruitId, userId: requesterId, delta: refund, refunds, ts: FieldValue.serverTimestamp() });
+    return { ok: true, refund, refunds };
   });
 });
 
@@ -1235,12 +1301,10 @@ export const resolveRecruit = onCall(async (req) => {
       return { ok: true, outcome, pay };
     }
     const refund = rc.escrow || 0;
-    const rqRef = db.doc(`users/${rc.requesterId}`);
-    const rqSnap = await tx.get(rqRef);
-    if (rqSnap.exists && refund > 0) tx.update(rqRef, { balance: (rqSnap.data().balance || 0) + refund });
+    const refunds = await refundSponsorsInTx(tx, rc); // 후원자에게 비율 환불(공동 의뢰)
     tx.update(rRef, { escrow: 0, status: 'closed', closedAt: FieldValue.serverTimestamp() });
-    if (refund > 0) tx.set(db.collection('ledger').doc(), { type: 'recruit_resolve_refund', recruitId, userId: rc.requesterId, delta: refund, ts: FieldValue.serverTimestamp() });
-    return { ok: true, outcome, refund };
+    if (refund > 0) tx.set(db.collection('ledger').doc(), { type: 'recruit_resolve_refund', recruitId, delta: refund, refunds, ts: FieldValue.serverTimestamp() });
+    return { ok: true, outcome, refund, refunds };
   });
 });
 
