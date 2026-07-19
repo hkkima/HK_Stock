@@ -165,5 +165,21 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
+
+    // ── 팀 경제(기업 포인트) — 회사 금고·원장·서비스 주문 ──────────
+    //   전부 공개 읽기(학급 투명성 — CEO 지출을 전원이 감시). 쓰기는 Cloud Functions(Admin SDK)만.
+    //   금고 잔액(companies.corpBalance)·주급/상여/배당/교환은 함수가 CEO PIN 검증 후 집행.
+    match /companies/{companyId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /companyLedger/{id} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /corpOrders/{orderId} {
+      allow read: if true;
+      allow write: if false;
+    }
   }
 }

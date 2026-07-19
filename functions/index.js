@@ -1402,3 +1402,160 @@ export const payWeeklyDividend = onSchedule({ schedule: '0 9 * * 1', timeZone: '
   }
   await paidRef.set({ [lastWeek]: { at: Date.now(), grandTotal, teams: results.length } }, { merge: true });
 });
+
+// ═══════════════════════════════════════════════════════════════
+//  팀 경제(기업 포인트) — 회사 금고(companies.corpBalance) 기반.
+//   ★거버넌스★: 지출은 CEO만(company.ceoUserId + CEO PIN 검증). 전 지출은 companyLedger(공개)에 기록.
+//   ★단위★: 기업 포인트 = 개인 포인트와 같은 단위지만 회사 금고에 '동결'(DP 전환 불가).
+//     유입 grantCorpPoints(housePool→금고, 총량보존) · 환류 salary/bonus/dividend(금고→개인) · 소각 redeem.
+//   ★소득세★: 주급의 10%는 housePool 로 원천징수 → 리셋 하우스 적자 자연 회수.
+//   총량보존: Σ개인 + Σ금고 + housePool + Σreserve + Σescrow = 불변(금고를 보존집합에 추가).
+// ═══════════════════════════════════════════════════════════════
+
+const SALARY_TAX_BPS = 1000; // 주급 소득세 10%
+
+// CEO 권한 검증(트랜잭션 내): 회사 존재 + ceoUserId 일치 + CEO PIN 일치. reads-before-writes 유지용으로 tx 사용.
+async function loadCeoCompany(tx, companyId, ceoUserId, pinHash) {
+  const cRef = db.doc(`companies/${companyId}`);
+  const cSnap = await tx.get(cRef);
+  if (!cSnap.exists) throw new HttpsError('not-found', '회사를 찾을 수 없습니다.');
+  const company = cSnap.data();
+  if (company.ceoUserId !== ceoUserId) throw new HttpsError('permission-denied', '대표(CEO)만 집행할 수 있습니다.');
+  const ceoSnap = await tx.get(db.doc(`users/${ceoUserId}`));
+  if (!ceoSnap.exists) throw new HttpsError('not-found', 'CEO 계정을 찾을 수 없습니다.');
+  requirePin(ceoSnap.data(), pinHash);
+  return { cRef, company };
+}
+
+// ── 운영자: 회사 생성/수정 ──────────────────────────────────
+export const upsertCompany = onCall(async (req) => {
+  assertAdmin(req);
+  const { companyId, name, ceoUserId, stockId, members } = req.data || {};
+  if (!companyId || !name || !ceoUserId) throw new HttpsError('invalid-argument', 'companyId/name/ceoUserId 필요.');
+  const ref = db.doc(`companies/${companyId}`);
+  const snap = await ref.get();
+  const patch = { name: String(name), ceoUserId: String(ceoUserId), updatedAt: FieldValue.serverTimestamp() };
+  if (stockId !== undefined) patch.stockId = stockId ? String(stockId) : null;
+  if (Array.isArray(members)) patch.members = members.map(String);
+  if (!snap.exists) patch.corpBalance = 0; // 최초 생성 시에만 0 초기화(기존 금고 보존)
+  await ref.set(patch, { merge: true });
+  return { companyId, created: !snap.exists };
+});
+
+// ── 운영자: 회사 금고 충전(순위 배당·초기자본) — housePool→금고(총량보존) 또는 mint ──
+export const grantCorpPoints = onCall(async (req) => {
+  assertAdmin(req);
+  const { companyId, amount, memo, source } = req.data || {};
+  const amt = Math.floor(Number(amount));
+  if (!companyId || !Number.isInteger(amt) || amt === 0) throw new HttpsError('invalid-argument', 'companyId/amount 필요.');
+  const src = source === 'mint' ? 'mint' : 'house';
+  await db.runTransaction(async (tx) => {
+    const cRef = db.doc(`companies/${companyId}`);
+    const cSnap = await tx.get(cRef);
+    if (!cSnap.exists) throw new HttpsError('not-found', '회사를 찾을 수 없습니다.');
+    tx.update(cRef, { corpBalance: FieldValue.increment(amt) });
+    if (src === 'house') tx.set(boardRef(), { housePool: FieldValue.increment(-amt) }, { merge: true }); // 금고↑ = housePool↓(총량보존)
+    tx.set(db.collection('companyLedger').doc(), { companyId, type: 'grant', amount: amt, source: src, memo: memo || '', ts: FieldValue.serverTimestamp() });
+  });
+  return { companyId, amount: amt, source: src };
+});
+
+// ── CEO: 주급 (금고→팀원, 소득세 10% → housePool) ──────────
+export const paySalary = onCall(async (req) => {
+  assertAuth(req);
+  const { companyId, ceoUserId, pinHash, payments } = req.data || {};
+  if (!companyId || !ceoUserId || !Array.isArray(payments) || !payments.length) throw new HttpsError('invalid-argument', 'companyId/ceoUserId/payments 필요.');
+  const clean = payments.map((p) => ({ userId: String(p.userId), gross: Math.floor(Number(p.gross)) })).filter((p) => p.userId && p.gross > 0);
+  if (!clean.length) throw new HttpsError('invalid-argument', '유효한 지급 항목이 없습니다.');
+  const res = await db.runTransaction(async (tx) => {
+    const { cRef, company } = await loadCeoCompany(tx, companyId, ceoUserId, pinHash);
+    const totalGross = clean.reduce((a, p) => a + p.gross, 0);
+    if ((company.corpBalance || 0) < totalGross) throw new HttpsError('failed-precondition', '금고 잔액이 부족합니다(체불).');
+    const memRefs = clean.map((p) => db.doc(`users/${p.userId}`));
+    const memSnaps = await Promise.all(memRefs.map((r) => tx.get(r)));
+    let totalTax = 0; let totalNet = 0; const lines = [];
+    memSnaps.forEach((s, i) => {
+      if (!s.exists) throw new HttpsError('not-found', `팀원(${clean[i].userId}) 계정을 찾을 수 없습니다.`);
+      const gross = clean[i].gross;
+      const tax = Math.round((gross * SALARY_TAX_BPS) / 10000);
+      const net = gross - tax;
+      totalTax += tax; totalNet += net;
+      tx.update(memRefs[i], { balance: FieldValue.increment(net) });
+      lines.push({ userId: clean[i].userId, gross, tax, net });
+    });
+    tx.update(cRef, { corpBalance: FieldValue.increment(-totalGross) });
+    tx.set(boardRef(), { housePool: FieldValue.increment(totalTax) }, { merge: true }); // 소득세 → housePool(적자 회수)
+    tx.set(db.collection('companyLedger').doc(), { companyId, type: 'salary', totalGross, totalTax, totalNet, count: clean.length, lines, ceoUserId, ts: FieldValue.serverTimestamp() });
+    return { totalGross, totalTax, totalNet, count: clean.length };
+  });
+  return { companyId, ...res };
+});
+
+// ── CEO: 상여 (금고→팀원 1인, 무세) ───────────────────────
+export const payBonus = onCall(async (req) => {
+  assertAuth(req);
+  const { companyId, ceoUserId, pinHash, userId, amount, memo } = req.data || {};
+  const amt = Math.floor(Number(amount));
+  if (!companyId || !ceoUserId || !userId || !(amt > 0)) throw new HttpsError('invalid-argument', 'companyId/ceoUserId/userId/amount 필요.');
+  await db.runTransaction(async (tx) => {
+    const { cRef, company } = await loadCeoCompany(tx, companyId, ceoUserId, pinHash);
+    if ((company.corpBalance || 0) < amt) throw new HttpsError('failed-precondition', '금고 잔액이 부족합니다.');
+    const mRef = db.doc(`users/${userId}`);
+    const mSnap = await tx.get(mRef);
+    if (!mSnap.exists) throw new HttpsError('not-found', '대상 계정을 찾을 수 없습니다.');
+    tx.update(mRef, { balance: FieldValue.increment(amt) });
+    tx.update(cRef, { corpBalance: FieldValue.increment(-amt) });
+    tx.set(db.collection('companyLedger').doc(), { companyId, type: 'bonus', userId: String(userId), amount: amt, memo: memo || '', ceoUserId, ts: FieldValue.serverTimestamp() });
+  });
+  return { companyId, userId, amount: amt };
+});
+
+// ── CEO: 자체 배당 (금고→자사주 보유자, perShare×shares) ───
+export const payTeamDividend = onCall(async (req) => {
+  assertAuth(req);
+  const { companyId, ceoUserId, pinHash, perShare } = req.data || {};
+  const ps = Math.floor(Number(perShare));
+  if (!companyId || !ceoUserId || !(ps > 0)) throw new HttpsError('invalid-argument', 'companyId/ceoUserId/perShare 필요.');
+  const cPre = await db.doc(`companies/${companyId}`).get();
+  if (!cPre.exists) throw new HttpsError('not-found', '회사를 찾을 수 없습니다.');
+  const stockId = cPre.data().stockId;
+  if (!stockId) throw new HttpsError('failed-precondition', '상장 종목이 없는 회사입니다.');
+  const hs = await db.collection('holdings').where('stockId', '==', stockId).get();
+  const payouts = []; let total = 0;
+  hs.forEach((d) => { const h = d.data(); if ((h.shares || 0) > 0) { const amt = ps * h.shares; total += amt; payouts.push({ userId: h.userId, amt }); } });
+  if (!payouts.length) throw new HttpsError('failed-precondition', '자사주 보유자가 없습니다.');
+  await db.runTransaction(async (tx) => {
+    const { cRef, company } = await loadCeoCompany(tx, companyId, ceoUserId, pinHash);
+    if ((company.corpBalance || 0) < total) throw new HttpsError('failed-precondition', '금고 잔액이 부족합니다.');
+    const uRefs = payouts.map((p) => db.doc(`users/${p.userId}`));
+    const uSnaps = await Promise.all(uRefs.map((r) => tx.get(r)));
+    uSnaps.forEach((s, i) => { if (s.exists) tx.update(uRefs[i], { balance: FieldValue.increment(payouts[i].amt) }); });
+    tx.update(cRef, { corpBalance: FieldValue.increment(-total) });
+    tx.set(db.collection('companyLedger').doc(), { companyId, type: 'team_dividend', stockId, perShare: ps, total, count: payouts.length, ceoUserId, ts: FieldValue.serverTimestamp() });
+  });
+  return { companyId, perShare: ps, total, count: payouts.length };
+});
+
+// ── CEO: 팀 포인트 교환소 (금고 소각 → 서비스 주문) ────────
+//   가격·승인여부는 meta/corpServices(운영자 설정) 우선. 미설정 서비스는 승인 필요(status:'pending').
+export const redeemCorpService = onCall(async (req) => {
+  assertAuth(req);
+  const { companyId, ceoUserId, pinHash, service, params } = req.data || {};
+  if (!companyId || !ceoUserId || !service) throw new HttpsError('invalid-argument', 'companyId/ceoUserId/service 필요.');
+  const cfg = (await db.doc('meta/corpServices').get()).data() || {};
+  const svc = (cfg.services && cfg.services[service]) || null;
+  const price = svc ? Math.floor(Number(svc.price)) : Math.floor(Number(req.data?.cost));
+  if (!(price > 0)) throw new HttpsError('failed-precondition', '서비스 가격이 설정되지 않았습니다.');
+  const needsApproval = svc ? !!svc.needsApproval : true; // 미설정 서비스는 승인 필요(안전)
+  const res = await db.runTransaction(async (tx) => {
+    const { cRef, company } = await loadCeoCompany(tx, companyId, ceoUserId, pinHash);
+    if ((company.corpBalance || 0) < price) throw new HttpsError('failed-precondition', '금고 잔액이 부족합니다.');
+    tx.update(cRef, { corpBalance: FieldValue.increment(-price) });
+    const orderRef = db.collection('corpOrders').doc();
+    const status = needsApproval ? 'pending' : 'fulfilled';
+    tx.set(orderRef, { companyId, service: String(service), cost: price, params: params || {}, status, ceoUserId, ts: FieldValue.serverTimestamp() });
+    tx.set(db.collection('companyLedger').doc(), { companyId, type: 'redeem', service: String(service), cost: price, orderId: orderRef.id, status, ceoUserId, ts: FieldValue.serverTimestamp() });
+    return { orderId: orderRef.id, status };
+  });
+  return { companyId, service, cost: price, ...res };
+});
