@@ -1358,6 +1358,14 @@ function seoulWeekKey(d = new Date()) {
   return `${s.getFullYear()}-W${String(week).padStart(2, '0')}`;
 }
 
+// 급여 주 키 — 경계가 **월요일 09:00(KST)**. 09:00 이전은 아직 지난 주급 주로 친다.
+//   9시간을 뒤로 민 뒤 ISO 주 키를 구하면 월 09:00 이 정확히 월 00:00 으로 정렬된다.
+//   (월 08:59 → 전주 / 월 09:00 → 신주). 주급 1주 1회 제한(paySalary)의 기준.
+const PAY_WEEK_OFFSET_MS = 9 * 60 * 60 * 1000;
+function payWeekKey(d = new Date()) {
+  return seoulWeekKey(new Date(d.getTime() - PAY_WEEK_OFFSET_MS));
+}
+
 // 운영자: 배당 on/off + 배율(rate) 런타임 조정(재배포 불필요). 기본 rate=10.
 export const setDividendConfig = onCall(async (req) => {
   assertAdmin(req);
@@ -1487,8 +1495,13 @@ export const paySalary = onCall(async (req) => {
   if (!stockId || !ceoUserId || !Array.isArray(payments) || !payments.length) throw new HttpsError('invalid-argument', 'stockId/ceoUserId/payments 필요.');
   const clean = payments.map((p) => ({ userId: String(p.userId), gross: Math.floor(Number(p.gross)) })).filter((p) => p.userId && p.gross > 0);
   if (!clean.length) throw new HttpsError('invalid-argument', '유효한 지급 항목이 없습니다.');
+  const wk = payWeekKey();
   const res = await db.runTransaction(async (tx) => {
     const { sRef, team } = await loadCeoTeam(tx, stockId, ceoUserId, pinHash);
+    // ★주급은 1주 1회★ — 경계는 월요일 09:00(KST). 쪼개 지급으로 한도를 우회하지 못하게 막는다.
+    if (team.lastSalaryWeek === wk) {
+      throw new HttpsError('failed-precondition', '주급은 한 주에 한 번만 지급할 수 있습니다(다음 월요일 09:00 이후 가능).');
+    }
     const totalGross = clean.reduce((a, p) => a + p.gross, 0);
     if ((team.corpBalance || 0) < totalGross) throw new HttpsError('failed-precondition', '팀 금고 잔액이 부족합니다(체불).');
     const memRefs = clean.map((p) => db.doc(`users/${p.userId}`));
@@ -1503,12 +1516,12 @@ export const paySalary = onCall(async (req) => {
       tx.update(memRefs[i], { balance: FieldValue.increment(net) });
       lines.push({ userId: clean[i].userId, gross, tax, net });
     });
-    tx.update(sRef, { corpBalance: FieldValue.increment(-totalGross) });
+    tx.update(sRef, { corpBalance: FieldValue.increment(-totalGross), lastSalaryWeek: wk });
     tx.set(boardRef(), { housePool: FieldValue.increment(totalTax) }, { merge: true }); // 소득세 → housePool
-    tx.set(db.collection('teamLedger').doc(), { stockId, type: 'salary', totalGross, totalTax, totalNet, count: clean.length, lines, ceoUserId, ts: FieldValue.serverTimestamp() });
+    tx.set(db.collection('teamLedger').doc(), { stockId, type: 'salary', weekKey: wk, totalGross, totalTax, totalNet, count: clean.length, lines, ceoUserId, ts: FieldValue.serverTimestamp() });
     return { totalGross, totalTax, totalNet, count: clean.length };
   });
-  return { stockId, ...res };
+  return { stockId, weekKey: wk, ...res };
 });
 
 // ── CEO: 상여 (금고→팀원 1인, 소득세 15% → housePool) ─────
