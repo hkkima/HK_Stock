@@ -1630,6 +1630,8 @@ export const subscribeShares = onCall(async (req) => {
 
 // ── CEO: 팀 포인트 교환소 (금고 소각 → 서비스 주문) ────────
 //   가격·승인여부는 meta/corpServices(운영자 설정) 우선. 미설정 서비스는 승인 필요(status:'pending').
+//   ★소각★: corpBalance 만 줄이고 반대편이 없다 = 총량 감소. 거부 시 rejectCorpOrder 로 되돌린다.
+//   ★즉시효과 서비스(svc.effect)★: 승인 없이 바로 체결(fulfilled) → 환불 불가. 예 = 홍보 계약(뉴스 호재).
 export const redeemCorpService = onCall(async (req) => {
   assertAuth(req);
   const { stockId, ceoUserId, pinHash, service, params } = req.data || {};
@@ -1638,16 +1640,89 @@ export const redeemCorpService = onCall(async (req) => {
   const svc = (cfg.services && cfg.services[service]) || null;
   const price = svc ? Math.floor(Number(svc.price)) : Math.floor(Number(req.data?.cost));
   if (!(price > 0)) throw new HttpsError('failed-precondition', '서비스 가격이 설정되지 않았습니다.');
-  const needsApproval = svc ? !!svc.needsApproval : true;
+  const effect = svc?.effect || null;
+  // 즉시효과가 있으면 되돌릴 수 없으므로 승인 대기를 두지 않는다.
+  const needsApproval = effect ? false : (svc ? !!svc.needsApproval : true);
   const res = await db.runTransaction(async (tx) => {
     const { sRef, team } = await loadCeoTeam(tx, stockId, ceoUserId, pinHash);
     if ((team.corpBalance || 0) < price) throw new HttpsError('failed-precondition', '팀 금고 잔액이 부족합니다.');
     tx.update(sRef, { corpBalance: FieldValue.increment(-price) });
     const orderRef = db.collection('corpOrders').doc();
     const status = needsApproval ? 'pending' : 'fulfilled';
-    tx.set(orderRef, { stockId, service: String(service), cost: price, params: params || {}, status, ceoUserId, ts: FieldValue.serverTimestamp() });
-    tx.set(db.collection('teamLedger').doc(), { stockId, type: 'redeem', service: String(service), cost: price, orderId: orderRef.id, status, ceoUserId, ts: FieldValue.serverTimestamp() });
-    return { orderId: orderRef.id, status };
+    tx.set(orderRef, {
+      stockId, service: String(service), serviceName: svc?.name || String(service),
+      cost: price, params: params || {}, status, refundable: !effect, ceoUserId,
+      ts: FieldValue.serverTimestamp(),
+    });
+    tx.set(db.collection('teamLedger').doc(), { stockId, type: 'redeem', service: String(service), serviceName: svc?.name || String(service), cost: price, orderId: orderRef.id, status, ceoUserId, ts: FieldValue.serverTimestamp() });
+    return { orderId: orderRef.id, status, teamName: team.name || stockId };
   });
-  return { stockId, service, cost: price, ...res };
+
+  // 즉시효과 적용 — 트랜잭션 밖에서(applyImpactNews 가 자체 트랜잭션을 쓴다).
+  //   ★호재는 구매 팀이 아니라 공급사(까미 비전스)에 붙는다★
+  //   자기 팀 호재였다면 금고→주가→팀원 매도 로 이어지는 세탁 경로가 열린다. 그래서 target 을 분리한다.
+  let applied = null;
+  if (effect?.type === 'news') {
+    const headline = String(effect.headline || '{team}, {supplier} 와 계약 체결')
+      .replaceAll('{team}', res.teamName)
+      .replaceAll('{supplier}', effect.supplierName || '까미 비전스');
+    try {
+      applied = await applyImpactNews({
+        text: headline, scope: 'stock', target: effect.target, pct: Number(effect.pct) || 0,
+        kind: 'corp_promo', category: 'promo',
+      });
+    } catch (e) {
+      console.error('홍보 계약 호재 적용 실패:', e); // 주문은 이미 체결됨 — 운영자가 수동 보정
+    }
+  }
+  return { stockId, service, cost: price, ...res, effect: applied };
+});
+
+// ── 운영자: 주문 거부 → 금고 환원(소각 되돌리기) ────────────
+//   승인제 서비스(강사 슬롯 등)를 못 들어줄 때. pending 만 대상이고, 즉시효과 주문은 애초에 pending 이 아니다.
+export const rejectCorpOrder = onCall(async (req) => {
+  assertAdmin(req);
+  const { orderId, reason } = req.data || {};
+  if (!orderId) throw new HttpsError('invalid-argument', 'orderId 필요.');
+  return db.runTransaction(async (tx) => {
+    const oRef = db.doc(`corpOrders/${orderId}`);
+    const oSnap = await tx.get(oRef);
+    if (!oSnap.exists) throw new HttpsError('not-found', '주문을 찾을 수 없습니다.');
+    const o = oSnap.data();
+    if (o.status !== 'pending') throw new HttpsError('failed-precondition', `대기 중인 주문만 거부할 수 있습니다(현재: ${o.status}).`);
+    const sRef = db.doc(`stocks/${o.stockId}`);
+    const sSnap = await tx.get(sRef);
+    if (!sSnap.exists) throw new HttpsError('not-found', '팀(종목)을 찾을 수 없습니다.');
+    const refund = Math.floor(Number(o.cost) || 0);
+    tx.update(sRef, { corpBalance: FieldValue.increment(refund) }); // 소각 되돌리기
+    tx.update(oRef, { status: 'rejected', reason: String(reason || ''), resolvedAt: FieldValue.serverTimestamp() });
+    tx.set(db.collection('teamLedger').doc(), { stockId: o.stockId, type: 'redeem_refund', service: o.service, serviceName: o.serviceName || o.service, amount: refund, orderId, reason: String(reason || ''), ts: FieldValue.serverTimestamp() });
+    return { orderId, stockId: o.stockId, refund };
+  });
+});
+
+// ── 운영자: 주문 이행 완료 처리 (포인트 이동 없음, 상태만) ──
+export const fulfillCorpOrder = onCall(async (req) => {
+  assertAdmin(req);
+  const { orderId, memo } = req.data || {};
+  if (!orderId) throw new HttpsError('invalid-argument', 'orderId 필요.');
+  return db.runTransaction(async (tx) => {
+    const oRef = db.doc(`corpOrders/${orderId}`);
+    const oSnap = await tx.get(oRef);
+    if (!oSnap.exists) throw new HttpsError('not-found', '주문을 찾을 수 없습니다.');
+    const o = oSnap.data();
+    if (o.status !== 'pending') throw new HttpsError('failed-precondition', `대기 중인 주문만 승인할 수 있습니다(현재: ${o.status}).`);
+    tx.update(oRef, { status: 'fulfilled', memo: String(memo || ''), resolvedAt: FieldValue.serverTimestamp() });
+    tx.set(db.collection('teamLedger').doc(), { stockId: o.stockId, type: 'redeem_fulfilled', service: o.service, serviceName: o.serviceName || o.service, cost: o.cost || 0, orderId, ts: FieldValue.serverTimestamp() });
+    return { orderId, stockId: o.stockId };
+  });
+});
+
+// ── 운영자: 교환소 가격표 설정 ──────────────────────────────
+export const setCorpServices = onCall(async (req) => {
+  assertAdmin(req);
+  const { services } = req.data || {};
+  if (!services || typeof services !== 'object') throw new HttpsError('invalid-argument', 'services 객체 필요.');
+  await db.doc('meta/corpServices').set({ services, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  return { count: Object.keys(services).length };
 });
