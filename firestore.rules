@@ -166,14 +166,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // ── 팀 경제(기업 포인트) — 회사 금고·원장·서비스 주문 ──────────
+    // ── 팀 경제(팀 포인트) — ★팀 = 주식★ ─────────────────────────
+    //   팀 금고는 stocks/{id}.corpBalance (별도 companies 컬렉션 없음. 상장=팀 생성, 상폐=팀 해산).
+    //   stocks 는 위에서 이미 공개읽기·쓰기금지. 원장/주문만 여기서 연다.
     //   전부 공개 읽기(학급 투명성 — CEO 지출을 전원이 감시). 쓰기는 Cloud Functions(Admin SDK)만.
-    //   금고 잔액(companies.corpBalance)·주급/상여/배당/교환은 함수가 CEO PIN 검증 후 집행.
-    match /companies/{companyId} {
-      allow read: if true;
-      allow write: if false;
-    }
-    match /companyLedger/{id} {
+    match /teamLedger/{id} {
       allow read: if true;
       allow write: if false;
     }
