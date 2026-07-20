@@ -21,6 +21,11 @@
 `grantTeamPoints`(운영자: 금고 충전) · `paySalary`(주급, **소득세 10%**→housePool) · `payBonus`(상여, **15%**)
 · `payTeamDividend`(자사주 배당) · `redeemCorpService`(교환소 소각). 전부 **CEO만**(`stocks.ceoUserId`+PIN) · 공개 원장 `teamLedger`.
 `upsertStock`은 `ceoUserId`를 받고 신규 상장 시 `corpBalance:0` 초기화 — **상장 폼·멤버 테이블에 대표 지정 UI 있음**.
+`paySalary` 는 **주급 1주 1회**(경계 = 월 09:00 KST, `stocks.lastSalaryWeek`).
+`redeemCorpService`(교환소 구매=**소각**) · `rejectCorpOrder`(거부→금고 환불) · `fulfillCorpOrder`(납품완료) · `setCorpServices`(가격표).
+★홍보 계약의 호재는 구매 팀이 아니라 **공급사 까미 비전스(T00)** 에 붙는다 — 자기 팀 호재면 금고→주가→팀원 매도 세탁 경로가 열린다.
+납품이 필요한 상품은 전부 `pending` 큐잉(즉시 fulfilled 면 미납품 시 환불 불가).
+
 `subscribeShares`(**유상증자 청약** — 팀원만·대금 전액 금고·신주 3일 락업). ★신주는 무담보(reserve 미증가)라
 **매도 시 곡선수령을 금고에서 지급**(회사 환매책임) — `trade` 매도 경로가 `holdings.offerShares`/`offerUnlockAt`로 분기한다.
 금고가 부족하면 매도 거부. 이 분기가 없으면 housePool 이 대납해 드레인 루프가 생긴다. 회계 검증 = `test-harness/offer_conservation.mjs`.
