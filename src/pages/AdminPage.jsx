@@ -26,7 +26,8 @@ function parseTraits(s) {
 }
 
 function NewStock() {
-  const [f, setF] = useState({ id: '', name: '', team: '', base: 1000, slope: 5, totalShares: 1000, sector: '', traits: '' });
+  const [f, setF] = useState({ id: '', name: '', team: '', base: 1000, slope: 5, totalShares: 1000, sector: '', traits: '', ceoUserId: '' });
+  const { users } = useApp();
   const { busy, msg, run } = useAction();
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   return (
@@ -36,6 +37,13 @@ function NewStock() {
         <input placeholder="종목 ID (영문, 예: teamA)" value={f.id} onChange={set('id')} />
         <input placeholder="기업명" value={f.name} onChange={set('name')} />
         <input placeholder="팀/멤버" value={f.team} onChange={set('team')} />
+        <label className="muted">
+          대표(CEO)
+          <select style={{ marginLeft: 4 }} value={f.ceoUserId} onChange={set('ceoUserId')}>
+            <option value="">— 미지정 —</option>
+            {users.map((u) => <option key={u.id} value={u.id}>{u.name || u.id}</option>)}
+          </select>
+        </label>
       </div>
       <div className="row" style={{ marginTop: 8 }}>
         <label className="muted">시작가<input type="number" style={{ width: 90, marginLeft: 4 }} value={f.base} onChange={set('base')} /></label>
@@ -48,7 +56,7 @@ function NewStock() {
         <button
           className="primary" disabled={busy}
           onClick={() => run(
-            () => upsertStock({ id: f.id, name: f.name, team: f.team, base: Number(f.base), slope: Number(f.slope), totalShares: Number(f.totalShares), sector: f.sector, traits: parseTraits(f.traits), status: 'closed' }),
+            () => upsertStock({ id: f.id, name: f.name, team: f.team, base: Number(f.base), slope: Number(f.slope), totalShares: Number(f.totalShares), sector: f.sector, traits: parseTraits(f.traits), ceoUserId: f.ceoUserId, status: 'closed' }),
             (r) => `상장 완료: ${r.id}`,
           )}
         >상장</button>
