@@ -642,14 +642,25 @@ function MembersOptions() {
     <div className="card">
       <h3>⑤ 멤버 · 스톡옵션 (자사주)</h3>
 
-      <div className="section-title">기업 멤버 지정 — 멤버는 자사주를 매수할 수 없습니다. 이름을 쉼표로.</div>
+      <div className="section-title">
+        기업 멤버 · 대표 지정 — 멤버는 자사주를 매수할 수 없습니다. 이름을 쉼표로.
+        <br /><span className="muted">★대표(CEO)는 허브에서 팀 금고로 주급·상여·배당을 집행할 권한을 가집니다.</span>
+      </div>
       <table className="tbl">
-        <thead><tr><th>종목</th><th>멤버(이름, 쉼표 구분)</th><th></th></tr></thead>
+        <thead><tr><th>종목</th><th>멤버(이름, 쉼표 구분)</th><th>대표(CEO)</th><th></th></tr></thead>
         <tbody>
           {stocks.map((s) => (
             <tr key={s.id}>
               <td>{s.name}</td>
               <td><input style={{ width: '100%', minWidth: 220 }} value={memText(s)} onChange={(e) => setMemEdit({ ...memEdit, [s.id]: e.target.value })} placeholder="김민성, 이예성" /></td>
+              <td>
+                <select value={s.ceoUserId || ''} disabled={busy}
+                  onChange={(e) => run(() => upsertStock({ id: s.id, ceoUserId: e.target.value }),
+                    () => (e.target.value ? `대표: ${nameById[e.target.value] || e.target.value}` : '대표 해제'))}>
+                  <option value="">— 미지정 —</option>
+                  {users.map((u) => <option key={u.id} value={u.id}>{u.name || u.id}</option>)}
+                </select>
+              </td>
               <td><button className="ghost" disabled={busy} onClick={() => saveMembers(s)}>저장</button></td>
             </tr>
           ))}
