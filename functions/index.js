@@ -1422,6 +1422,7 @@ export const payWeeklyDividend = onSchedule({ schedule: '0 9 * * 1', timeZone: '
 // ═══════════════════════════════════════════════════════════════
 
 const SALARY_TAX_BPS = 1000; // 주급 소득세 10%
+const BONUS_TAX_BPS = 1500; // 상여 소득세 15% (주급보다 높게 — 정기급여 우대)
 
 // CEO 권한 검증(트랜잭션 내): 종목(팀) 존재 + ceoUserId 일치 + CEO PIN 일치. reads-before-writes 유지.
 async function loadCeoTeam(tx, stockId, ceoUserId, pinHash) {
@@ -1485,23 +1486,26 @@ export const paySalary = onCall(async (req) => {
   return { stockId, ...res };
 });
 
-// ── CEO: 상여 (금고→팀원 1인, 무세) ───────────────────────
+// ── CEO: 상여 (금고→팀원 1인, 소득세 15% → housePool) ─────
 export const payBonus = onCall(async (req) => {
   assertAuth(req);
   const { stockId, ceoUserId, pinHash, userId, amount, memo } = req.data || {};
-  const amt = Math.floor(Number(amount));
+  const amt = Math.floor(Number(amount)); // amt = 세전(gross)
   if (!stockId || !ceoUserId || !userId || !(amt > 0)) throw new HttpsError('invalid-argument', 'stockId/ceoUserId/userId/amount 필요.');
+  const tax = Math.round((amt * BONUS_TAX_BPS) / 10000);
+  const net = amt - tax;
   await db.runTransaction(async (tx) => {
     const { sRef, team } = await loadCeoTeam(tx, stockId, ceoUserId, pinHash);
     if ((team.corpBalance || 0) < amt) throw new HttpsError('failed-precondition', '팀 금고 잔액이 부족합니다.');
     const mRef = db.doc(`users/${userId}`);
     const mSnap = await tx.get(mRef);
     if (!mSnap.exists) throw new HttpsError('not-found', '대상 계정을 찾을 수 없습니다.');
-    tx.update(mRef, { balance: FieldValue.increment(amt) });
+    tx.update(mRef, { balance: FieldValue.increment(net) });
     tx.update(sRef, { corpBalance: FieldValue.increment(-amt) });
-    tx.set(db.collection('teamLedger').doc(), { stockId, type: 'bonus', userId: String(userId), amount: amt, memo: memo || '', ceoUserId, ts: FieldValue.serverTimestamp() });
+    tx.set(boardRef(), { housePool: FieldValue.increment(tax) }, { merge: true }); // 상여 소득세 → housePool
+    tx.set(db.collection('teamLedger').doc(), { stockId, type: 'bonus', userId: String(userId), amount: amt, tax, net, memo: memo || '', ceoUserId, ts: FieldValue.serverTimestamp() });
   });
-  return { stockId, userId, amount: amt };
+  return { stockId, userId, amount: amt, tax, net };
 });
 
 // ── CEO: 자체 배당 (금고→자사주 보유자, perShare×shares) ───
