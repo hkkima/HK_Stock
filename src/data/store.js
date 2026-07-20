@@ -78,6 +78,11 @@ export async function trade({ userId, pinHash, stockId, side, qty }) {
   const res = await callable('trade')({ userId, pinHash, stockId, side, qty });
   return res.data;
 }
+// 유상증자 청약 — 팀원만. 대금 전액 팀 금고, 신주 3일 락업(락업 중 매도 불가).
+export async function subscribeShares({ userId, pinHash, stockId, qty }) {
+  const res = await callable('subscribeShares')({ userId, pinHash, stockId, qty });
+  return res.data;
+}
 export async function upsertStock(payload) {
   return (await callable('upsertStock')(payload)).data;
 }

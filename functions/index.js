@@ -8,7 +8,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { quoteBuy, quoteSell, nextAvgCost, priceAdjustDelta, sellFee } from './market.js';
+import { quoteBuy, quoteSell, nextAvgCost, priceAdjustDelta, sellFee, rangeSum } from './market.js';
 import { generateNews, NEWS_TICK_PROB } from './news.js';
 import { applyTick } from './tick.js';
 import { findEventPreset, renderEventHeadline } from './events.js';
@@ -70,7 +70,14 @@ export const trade = onCall(async (req) => {
     const isMember = Array.isArray(stock.members) && stock.members.includes(userId);
     const locked = holding.locked || 0;
 
+    // 유상증자 신주(offerShares): 대금이 reserve 가 아니라 팀 금고로 갔으므로 무담보.
+    //   → 매도 시 곡선수령을 reserve 가 아니라 **금고(corpBalance)에서** 지급한다(환매책임). 부족하면 매도 불가.
+    //   → 락업(offerUnlockAt) 전에는 매도 자체가 불가.
+    const offerShares = holding.offerShares || 0;
+    const offerLocked = offerShares > 0 && Date.now() < (holding.offerUnlockAt || 0) ? offerShares : 0;
+
     let cashDelta; let newShares; let newAvg; let fillPrice; let Q; let fee = 0;
+    let normalProceeds = 0; let offerProceeds = 0; let nOffer = 0;
     if (side === 'buy') {
       if (isMember) throw new HttpsError('failed-precondition', '자사주는 매수할 수 없습니다(스톡옵션으로만 보유).');
       try { Q = quoteBuy(stock, q); } catch (e) { throw new HttpsError('failed-precondition', e.message); }
@@ -80,10 +87,20 @@ export const trade = onCall(async (req) => {
       newShares = (holding.shares || 0) + q;
       newAvg = nextAvgCost(holding.shares || 0, holding.avgCost || 0, q, Q.cost / q);
     } else {
-      // 스톡옵션(locked)은 매도 불가 → 매도 가능 수량 = 보유 − 잠금.
-      if ((holding.shares || 0) - locked < q) throw new HttpsError('failed-precondition', '매도 가능 수량이 부족합니다(스톡옵션 제외).');
+      // 스톡옵션(locked)·락업 중 신주(offerLocked)는 매도 불가 → 매도 가능 = 보유 − 잠금 − 락업신주.
+      if ((holding.shares || 0) - locked - offerLocked < q) throw new HttpsError('failed-precondition', '매도 가능 수량이 부족합니다(스톡옵션·락업 신주 제외).');
       try { Q = quoteSell(stock, q); } catch (e) { throw new HttpsError('failed-precondition', e.message); }
-      // 매도 수수료(결정적) — 곡선수령(proceeds)은 그대로 reserve 에서 빠지고, 수수료만 housePool 로 귀속.
+      // 일반주를 먼저 소진하고(곡선 상단), 모자란 만큼만 신주에서 뺀다(곡선 하단) — 결정적 배분.
+      const normalAvail = Math.max(0, (holding.shares || 0) - locked - offerShares);
+      const nNormal = Math.min(q, normalAvail);
+      nOffer = q - nNormal;
+      const c = stock.circulating;
+      normalProceeds = rangeSum(stock.base, stock.slope, c - nNormal, c - 1);
+      offerProceeds = Q.proceeds - normalProceeds;
+      if (nOffer > 0 && (stock.corpBalance || 0) < offerProceeds) {
+        throw new HttpsError('failed-precondition', '팀 금고가 부족해 신주를 환매할 수 없습니다(금고 충전 후 매도 가능).');
+      }
+      // 매도 수수료(결정적) — 곡선수령(proceeds)은 reserve/금고에서 빠지고, 수수료만 housePool 로 귀속.
       fee = sellFee(Q.proceeds);
       cashDelta = Q.proceeds - fee; // 지갑엔 수수료 뺀 순수령
       fillPrice = Math.round(Q.proceeds / q);
@@ -91,14 +108,22 @@ export const trade = onCall(async (req) => {
       newAvg = holding.avgCost || 0;
     }
 
-    tx.update(sRef, {
+    const stockPatch = {
       circulating: Q.newCirculating,
-      reserve: stock.reserve + (side === 'buy' ? Q.cost : -Q.proceeds), // reserve 는 곡선적분 그대로(정합 유지)
+      // reserve 는 곡선적분 그대로(정합 유지). 단 신주 환매분(offerProceeds)은 금고가 부담하므로 reserve 에서 빼지 않는다.
+      reserve: stock.reserve + (side === 'buy' ? Q.cost : -normalProceeds),
       price: Q.newPrice,
       priceHistory: appendHist(stock.priceHistory, Q.newPrice),
-    });
+    };
+    if (offerProceeds > 0) stockPatch.corpBalance = FieldValue.increment(-offerProceeds); // 회사 환매책임
+    tx.update(sRef, stockPatch);
     tx.update(uRef, { balance: balance + cashDelta });
-    tx.set(hRef, { userId, stockId, shares: newShares, avgCost: newAvg, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    const hPatch = { userId, stockId, shares: newShares, avgCost: newAvg, updatedAt: FieldValue.serverTimestamp() };
+    if (nOffer > 0) hPatch.offerShares = Math.max(0, offerShares - nOffer);
+    tx.set(hRef, hPatch, { merge: true });
+    if (offerProceeds > 0) {
+      tx.set(db.collection('teamLedger').doc(), { stockId, type: 'offer_buyback', userId, qty: nOffer, amount: offerProceeds, ts: FieldValue.serverTimestamp() });
+    }
     // 수수료(매도만)는 지갑→housePool 이동 = 총량 보존. increment 로만(틱과 충돌 방지, boardRef read 안 함).
     if (fee > 0) tx.set(boardRef(), { housePool: FieldValue.increment(fee) }, { merge: true });
     tx.set(db.collection('trades').doc(), { userId, stockId, side, qty: q, price: fillPrice, cash: cashDelta, fee, ts: FieldValue.serverTimestamp() });
@@ -1528,6 +1553,66 @@ export const payTeamDividend = onCall(async (req) => {
     tx.set(db.collection('teamLedger').doc(), { stockId, type: 'team_dividend', perShare: ps, total, count: payouts.length, ceoUserId, ts: FieldValue.serverTimestamp() });
   });
   return { stockId, perShare: ps, total, count: payouts.length };
+});
+
+// ── 팀원: 유상증자 청약 (개인→팀 금고, 신주 3일 락업) ──────
+//   일반 매수는 멤버가 차단되므로 이것이 자사주 획득의 유일한 경로.
+//   ★대금 전액이 reserve 가 아니라 팀 금고로 간다★ → 신주는 무담보.
+//   그래서 매도 시 곡선수령을 금고에서 지급(=회사 환매책임, trade 매도 분기). 금고가 없으면 매도 불가.
+//   이 설계가 없으면 housePool 이 대납해 드레인 루프(100주 사이클당 약 −139K)가 생긴다.
+const OFFER_LOCK_MS = 3 * 24 * 60 * 60 * 1000; // 신주 락업 3일
+
+export const subscribeShares = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, stockId, qty } = req.data || {};
+  const q = Math.floor(Number(qty));
+  if (!userId || !stockId) throw new HttpsError('invalid-argument', 'userId/stockId 누락.');
+  if (!Number.isInteger(q) || q <= 0) throw new HttpsError('invalid-argument', '수량은 1 이상 정수.');
+
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const sRef = db.doc(`stocks/${stockId}`);
+    const hRef = db.doc(`holdings/${holdingId(userId, stockId)}`);
+    const [uSnap, sSnap, hSnap] = await Promise.all([tx.get(uRef), tx.get(sRef), tx.get(hRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    const user = uSnap.data();
+    requirePin(user, pinHash);
+    if (!sSnap.exists) throw new HttpsError('not-found', '종목(팀)을 찾을 수 없습니다.');
+    const stock = { ...sSnap.data(), circulating: sSnap.data().circulating || 0 };
+    if (stock.status !== 'open') throw new HttpsError('failed-precondition', '거래가 닫힌 종목입니다.');
+    if (!(Array.isArray(stock.members) && stock.members.includes(userId))) {
+      throw new HttpsError('permission-denied', '해당 팀 소속만 청약할 수 있습니다.');
+    }
+    const holding = hSnap.exists ? hSnap.data() : { shares: 0, avgCost: 0, offerShares: 0 };
+    const balance = user.balance || 0;
+
+    let Q;
+    try { Q = quoteBuy(stock, q); } catch (e) { throw new HttpsError('failed-precondition', e.message); }
+    if (Q.cost > balance) throw new HttpsError('failed-precondition', '잔액이 부족합니다.');
+
+    const fillPrice = Math.round(Q.cost / q);
+    const unlockAt = Math.max(holding.offerUnlockAt || 0, Date.now() + OFFER_LOCK_MS);
+
+    tx.update(sRef, {
+      circulating: Q.newCirculating,
+      corpBalance: FieldValue.increment(Q.cost), // ★대금 전액 금고★ (reserve 는 그대로 = 무담보 신주)
+      price: Q.newPrice,
+      priceHistory: appendHist(stock.priceHistory, Q.newPrice),
+    });
+    tx.update(uRef, { balance: balance - Q.cost });
+    tx.set(hRef, {
+      userId, stockId,
+      shares: (holding.shares || 0) + q,
+      avgCost: nextAvgCost(holding.shares || 0, holding.avgCost || 0, q, Q.cost / q),
+      offerShares: (holding.offerShares || 0) + q,
+      offerUnlockAt: unlockAt,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    tx.set(db.collection('trades').doc(), { userId, stockId, side: 'subscribe', qty: q, price: fillPrice, cash: -Q.cost, fee: 0, ts: FieldValue.serverTimestamp() });
+    tx.set(db.collection('ledger').doc(), { userId, stockId, type: 'subscribe', delta: -Q.cost, qty: q, price: fillPrice, houseDelta: 0, ts: FieldValue.serverTimestamp() });
+    tx.set(db.collection('teamLedger').doc(), { stockId, type: 'offer_subscribe', userId, qty: q, amount: Q.cost, price: fillPrice, unlockAt, ts: FieldValue.serverTimestamp() });
+    return { stockId, qty: q, price: fillPrice, cost: Q.cost, unlockAt, newBalance: balance - Q.cost, newPrice: Q.newPrice };
+  });
 });
 
 // ── CEO: 팀 포인트 교환소 (금고 소각 → 서비스 주문) ────────

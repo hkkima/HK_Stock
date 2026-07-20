@@ -21,7 +21,9 @@
 `grantTeamPoints`(운영자: 금고 충전) · `paySalary`(주급, **소득세 10%**→housePool) · `payBonus`(상여, **15%**)
 · `payTeamDividend`(자사주 배당) · `redeemCorpService`(교환소 소각). 전부 **CEO만**(`stocks.ceoUserId`+PIN) · 공개 원장 `teamLedger`.
 `upsertStock`은 `ceoUserId`를 받고 신규 상장 시 `corpBalance:0` 초기화 — **상장 폼·멤버 테이블에 대표 지정 UI 있음**.
-⏳ 미구현: **유상증자 `subscribeShares`**(팀원만·대금 전액 금고·3일 락업·**매도 시 금고에서 환매**). 설계는 `HK_Hub/docs/CORP-POINTS.md` §13.
+`subscribeShares`(**유상증자 청약** — 팀원만·대금 전액 금고·신주 3일 락업). ★신주는 무담보(reserve 미증가)라
+**매도 시 곡선수령을 금고에서 지급**(회사 환매책임) — `trade` 매도 경로가 `holdings.offerShares`/`offerUnlockAt`로 분기한다.
+금고가 부족하면 매도 거부. 이 분기가 없으면 housePool 이 대납해 드레인 루프가 생긴다. 회계 검증 = `test-harness/offer_conservation.mjs`.
 
 ## 운영/검증 방식
 - ★Node에서 콜러블 직접 호출 불가(Cloud Run 인증)★ → 시드·마이그레이션·일괄작업·검증은 **서비스 계정 키 + firebase-admin**으로 Firestore 직접 조작(`test-harness/` 참고). 키는 리포 밖·`.gitignore`.

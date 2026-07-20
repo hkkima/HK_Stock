@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../state/AppContext.jsx';
-import { trade, subscribeSeries, getCandles } from '../data/store.js';
+import { trade, subscribeShares, subscribeSeries, getCandles } from '../data/store.js';
 import { quoteBuy, quoteSell, quoteLadder, sellFee, SELL_FEE_BPS } from '../domain/market.js';
 
 const LOGO_COLORS = ['#5dcaa5', '#85b7eb', '#f0997b', '#ed93b1', '#fac775', '#97c459', '#afa9ec', '#f09595'];
@@ -81,7 +81,11 @@ function TradePanel({ stock }) {
   const myHolding = myHoldings.find((h) => h.stockId === stock.id);
   const held = myHolding?.shares || 0;
   const locked = myHolding?.locked || 0; // 스톡옵션(거래금지)
-  const sellable = held - locked;
+  // 유상증자 신주 — 락업(offerUnlockAt) 전에는 매도 불가.
+  const offerShares = myHolding?.offerShares || 0;
+  const offerUnlockAt = myHolding?.offerUnlockAt || 0;
+  const offerLocked = offerShares > 0 && Date.now() < offerUnlockAt ? offerShares : 0;
+  const sellable = held - locked - offerLocked;
   const isMember = Array.isArray(stock.members) && stock.members.includes(session.userId); // 자사주
   const balance = myUser?.balance || 0;
   const q = Math.floor(Number(qty)) || 0;
@@ -92,10 +96,17 @@ function TradePanel({ stock }) {
 
   const canBuy = open && !isMember && q > 0 && buyQ && buyQ.cost <= balance;
   const canSell = open && q > 0 && sellQ && q <= sellable;
+  // 팀원의 자사주 획득 경로 = 유상증자 청약(대금 전액 팀 금고로).
+  const canSubscribe = open && isMember && q > 0 && buyQ && buyQ.cost <= balance;
 
   async function go(side) {
     setBusy(true); setMsg(null);
     try {
+      if (side === 'subscribe') {
+        const r = await subscribeShares({ userId: session.userId, pinHash: session.pinHash, stockId: stock.id, qty: q });
+        setMsg({ ok: true, text: `청약 완료 −${r.cost.toLocaleString()}P (금고 입금) · ${new Date(r.unlockAt).toLocaleDateString()} 이후 매도 가능` });
+        return;
+      }
       const r = await trade({ userId: session.userId, pinHash: session.pinHash, stockId: stock.id, side, qty: q });
       setMsg({ ok: true, text: side === 'buy' ? `매수 체결 −${(-r.cash).toLocaleString()}P` : `매도 체결 +${r.cash.toLocaleString()}P` });
     } catch (e) { setMsg({ ok: false, text: e.message?.replace(/^.*?: /, '') || '실패' }); }
@@ -106,11 +117,19 @@ function TradePanel({ stock }) {
     <div style={{ marginTop: 10 }}>
       <div className="actions">
         <input type="number" min="1" value={qty} onChange={(e) => setQty(e.target.value)} aria-label="수량" />
-        <button className="buy" disabled={!canBuy || busy} onClick={() => go('buy')}>매수</button>
+        {isMember
+          ? <button className="buy" disabled={!canSubscribe || busy} onClick={() => go('subscribe')}>청약(유상증자)</button>
+          : <button className="buy" disabled={!canBuy || busy} onClick={() => go('buy')}>매수</button>}
         <button className="sell" disabled={!canSell || busy} onClick={() => go('sell')}>매도</button>
-        <span className="muted mono">보유 {held}주{locked > 0 ? ` (잠금 ${locked})` : ''} · 현금 {balance.toLocaleString()}P</span>
+        <span className="muted mono">보유 {held}주{locked > 0 ? ` (잠금 ${locked})` : ''}{offerLocked > 0 ? ` (락업 ${offerLocked})` : ''} · 현금 {balance.toLocaleString()}P</span>
       </div>
-      {isMember && <p className="muted" style={{ marginTop: 6 }}>🔒 자사주는 매수할 수 없습니다(스톡옵션으로만 보유).</p>}
+      {isMember && (
+        <p className="muted" style={{ marginTop: 6 }}>
+          🏢 자사주는 일반 매수 대신 <b>유상증자 청약</b>으로만 취득합니다. 대금은 전액 <b>팀 금고</b>로 들어가며, 신주는 <b>3일 락업</b> 후 매도할 수 있습니다.
+          {offerLocked > 0 && ` (락업 해제 ${new Date(offerUnlockAt).toLocaleString()})`}
+          <br />매도 시 대금은 리저브가 아니라 <b>팀 금고에서</b> 지급되므로, 금고가 비어 있으면 매도가 거부됩니다.
+        </p>
+      )}
       {open && q > 0 && (
         <div className="meta mono" style={{ marginTop: 6 }}>
           {buyQ ? `매수 −${buyQ.cost.toLocaleString()}P (→${buyQ.newPrice.toLocaleString()})` : '매수 불가(발행 초과)'} ·
