@@ -12,6 +12,16 @@
 4. **`base ≥ 1`** (곡선 양수). 시세 하한 = `slope × circulating`.
 5. **포인트·시세·보유 변경은 Cloud Functions(Admin SDK)만**. 클라 읽기 전용, `firestore.rules`가 차단.
 6. **`firestore.rules`는 베팅+주식 통합본**(이 리포가 진실원천). 베팅 규칙 깨지 마라.
+7. **★팀 = 주식★**: 별도 companies 컬렉션 없음. `stocks/{id}`에 `ceoUserId`(대표)·`corpBalance`(팀 금고)가 얹혀 있다.
+   **상장=팀 생성, 상장폐지=팀 해산** → `delistStock`은 잔여 `corpBalance`를 housePool로 회수해야 총량이 보존된다(반영됨).
+   총량보존 집합 = `Σ지갑 + Σreserve + **ΣcorpBalance** + housePool + Σescrow`.
+8. **`users` 문서 ID ≠ 이름 슬러그일 수 있다**(박지수=`pj15oo`, 이유진=`yoojin`). 조회는 name 필드 폴백 필수.
+
+## 팀 경제 함수 (2026-07-20 배포)
+`grantTeamPoints`(운영자: 금고 충전) · `paySalary`(주급, **소득세 10%**→housePool) · `payBonus`(상여, **15%**)
+· `payTeamDividend`(자사주 배당) · `redeemCorpService`(교환소 소각). 전부 **CEO만**(`stocks.ceoUserId`+PIN) · 공개 원장 `teamLedger`.
+`upsertStock`은 `ceoUserId`를 받고 신규 상장 시 `corpBalance:0` 초기화 — **상장 폼·멤버 테이블에 대표 지정 UI 있음**.
+⏳ 미구현: **유상증자 `subscribeShares`**(팀원만·대금 전액 금고·3일 락업·**매도 시 금고에서 환매**). 설계는 `HK_Hub/docs/CORP-POINTS.md` §13.
 
 ## 운영/검증 방식
 - ★Node에서 콜러블 직접 호출 불가(Cloud Run 인증)★ → 시드·마이그레이션·일괄작업·검증은 **서비스 계정 키 + firebase-admin**으로 Firestore 직접 조작(`test-harness/` 참고). 키는 리포 밖·`.gitignore`.
