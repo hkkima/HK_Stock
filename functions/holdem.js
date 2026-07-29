@@ -56,6 +56,89 @@ export function tournamentPayouts(standings, escrow, pct) {
 }
 
 /**
+ * 비중 배열을 합계 100 정수로 정규화. 잔여는 1번에게. 비어 있으면 균등.
+ */
+export function normaliseWeights(weights, count) {
+  const raw = Array.from({ length: count }, (_, i) => Math.max(0, Math.round(Number((weights || [])[i]) || 0)));
+  const sum = raw.reduce((a, b) => a + b, 0);
+  if (sum === 0) {
+    const each = Math.floor(100 / count);
+    const out = Array.from({ length: count }, () => each);
+    out[0] += 100 - each * count;
+    return out;
+  }
+  const scaled = raw.map((w) => Math.floor((w * 100) / sum));
+  scaled[0] += 100 - scaled.reduce((a, b) => a + b, 0);
+  return scaled;
+}
+
+/** 상금풀을 그룹별로 쪼갠다. 내림 + 잔여는 최상위 그룹에게. */
+export function splitPoolByGroup(pool, groupCount, weights) {
+  const p = Math.max(0, Math.floor(pool || 0));
+  if (groupCount <= 0) return [];
+  if (p === 0) return Array.from({ length: groupCount }, () => 0);
+  const w = normaliseWeights(weights, groupCount);
+  const out = w.map((x) => Math.floor((p * x) / 100));
+  out[0] += p - out.reduce((a, b) => a + b, 0);
+  return out;
+}
+
+/**
+ * 리그 최종 배분 — 그룹별 상금풀을 그룹 안 순위대로 나눈다.
+ *
+ * `groups`(최종 그룹 편성)와 `results`(그룹 안 순위)는 RTDB 에서 오지만,
+ * `groupWeights`·`groupPayouts` 는 개설 시점 Firestore 값이다. 돈의 비율은
+ * 클라이언트가 못 만지는 쪽에서만 읽는다.
+ *
+ * @param {string[][]} groups        최종 그룹별 uid 목록(앞이 상위 그룹)
+ * @param {{uid:string,rank:number}[]} results  그룹 안 순위
+ * @param {Record<string,{name?:string}>} entrants
+ * @param {string[]} paidIds         실제로 참가 등록된 uid
+ * @param {number} escrow
+ * @param {number[]} groupWeights    그룹 간 비중
+ * @param {number[]} groupPayouts    그룹 안 순위별 %
+ */
+export function leaguePayouts(groups, results, entrants, paidIds, escrow, groupWeights, groupPayouts) {
+  const paid = new Set(paidIds);
+  const rankOf = new Map((results || []).map((r) => [r.uid, Math.floor(r.rank || 0)]));
+  const live = (groups || []).map((g) => (g || []).filter((uid) => paid.has(uid)));
+  const pools = splitPoolByGroup(escrow, live.length, groupWeights);
+  const pct = Array.isArray(groupPayouts) && groupPayouts.length ? groupPayouts : [100];
+
+  const rows = [];
+  let assigned = 0;
+  live.forEach((members, g) => {
+    const sorted = members
+      .map((uid) => ({
+        userId: uid,
+        name: (entrants && entrants[uid] && entrants[uid].name) || uid,
+        group: g,
+        rank: rankOf.get(uid) || 0,
+        payout: 0,
+      }))
+      // 순위가 없는 사람(결석)은 뒤로. 그다음 uid 로 결정적으로 자른다.
+      .sort((a, b) => (a.rank || 99) - (b.rank || 99) || (a.userId < b.userId ? -1 : 1));
+
+    const gp = pools[g] || 0;
+    sorted.forEach((row, i) => { row.payout = Math.floor((gp * (Number(pct[i]) || 0)) / 100); });
+    const paidOut = sorted.reduce((a, r) => a + r.payout, 0);
+    if (sorted.length > 0) sorted[0].payout += gp - paidOut;   // 잔여·미지정 비율은 그룹 1위에게
+    else assigned -= gp;                                        // 그룹이 통째로 비면 아래에서 되돌린다
+    assigned += gp;
+    rows.push(...sorted);
+  });
+
+  // 빈 그룹 몫이 증발하지 않도록 남은 금액을 최상위 '사람이 있는' 그룹 1위에게.
+  const total = rows.reduce((a, r) => a + r.payout, 0);
+  const leftover = Math.max(0, Math.floor(escrow || 0)) - total;
+  if (leftover > 0 && rows.length > 0) {
+    const head = rows.find((r) => r.rank === 1) || rows[0];
+    head.payout += leftover;
+  }
+  return rows;
+}
+
+/**
  * RTDB 사설 방 노드에서 정산 대상을 뽑는다.
  * 바이인을 실제로 낸 사람(`paidIds`)만 대상 — 게임 상태는 클라이언트가 쓰므로
  * 여기서 걸러야 "안 낸 사람이 칩만 들고 나타나는" 조작이 막힌다.

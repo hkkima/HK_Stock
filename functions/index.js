@@ -13,7 +13,9 @@ import { quoteBuy, quoteSell, nextAvgCost, priceAdjustDelta, sellFee, rangeSum }
 import { generateNews, NEWS_TICK_PROB } from './news.js';
 import { applyTick } from './tick.js';
 import { findEventPreset, renderEventHeadline } from './events.js';
-import { privatePayouts, tournamentPayouts, seatsFromRoom, standingsFromTournament } from './holdem.js';
+import {
+  privatePayouts, tournamentPayouts, leaguePayouts, seatsFromRoom, standingsFromTournament,
+} from './holdem.js';
 
 // ★ 프론트 VITE_FUNCTIONS_REGION 과 일치(서울 리전) ★
 setGlobalOptions({ region: 'asia-northeast3' });
@@ -1748,32 +1750,52 @@ export const setCorpServices = onCall(async (req) => {
 
 const holdemRef = (gid) => db.doc(`holdemGames/${gid}`);
 
+const HOLDEM_KINDS = ['private', 'tournament', 'league'];
 function assertHoldemKind(kind) {
-  if (kind !== 'private' && kind !== 'tournament') {
-    throw new HttpsError('invalid-argument', "kind 는 'private' 또는 'tournament' 여야 합니다.");
+  if (!HOLDEM_KINDS.includes(kind)) {
+    throw new HttpsError('invalid-argument', `kind 는 ${HOLDEM_KINDS.join(' / ')} 중 하나여야 합니다.`);
   }
 }
 
 // ── 개설: 에스크로 그릇을 만든다(포인트 이동 없음) ────────────
 export const holdemCreate = onCall(async (req) => {
   assertAuth(req);
-  const { userId, pinHash, kind, rtdbPath, name, buyIn, payouts } = req.data || {};
+  const { userId, pinHash, kind, rtdbPath, name, buyIn, payouts, groupWeights, maxEntries } = req.data || {};
   assertHoldemKind(kind);
   if (!userId) throw new HttpsError('invalid-argument', 'userId가 필요합니다.');
-  if (!rtdbPath || !/^holdem\/(rooms|tournaments)\/[A-Za-z0-9_-]+$/.test(String(rtdbPath))) {
+  if (!rtdbPath || !/^holdem\/(rooms|tournaments|leagues)\/[A-Za-z0-9_-]+$/.test(String(rtdbPath))) {
     throw new HttpsError('invalid-argument', 'rtdbPath 형식이 올바르지 않습니다.');
   }
   const bi = Math.floor(Number(buyIn));
   if (!Number.isInteger(bi) || bi < 0) throw new HttpsError('invalid-argument', '바이인은 0 이상 정수여야 합니다.');
 
+  // 참가 횟수 상한. ★비용과 완전히 분리된 값이다★ — 무료 대회(바이인 0P)는
+  // 잔액이 제동을 걸어 주지 않으므로, 이 값이 없으면 무한 리엔트리가 된다.
+  //   null = 무제한 · 0 = 참가 불가 · n = n회까지
+  // '0 = 무제한' 같은 센티넬을 쓰면 "리바인 금지"를 표현할 방법이 사라진다.
+  let cap = null;
+  if (maxEntries !== null && maxEntries !== undefined) {
+    cap = Math.floor(Number(maxEntries));
+    if (!Number.isInteger(cap) || cap < 0) {
+      throw new HttpsError('invalid-argument', '참가 횟수 상한은 0 이상 정수이거나 null(무제한)이어야 합니다.');
+    }
+  }
+
   let pct = [];
-  if (kind === 'tournament') {
+  if (kind === 'tournament' || kind === 'league') {
     pct = (Array.isArray(payouts) ? payouts : []).map((n) => Math.floor(Number(n) || 0));
     if (!pct.length) throw new HttpsError('invalid-argument', '상금 배분표가 필요합니다.');
     if (pct.some((n) => n < 0)) throw new HttpsError('invalid-argument', '배분율은 음수일 수 없습니다.');
     if (pct.reduce((s, n) => s + n, 0) !== 100) {
       throw new HttpsError('invalid-argument', '상금 배분표 합계가 100이어야 합니다.');
     }
+  }
+  // 리그는 그룹 '간' 비중도 개설 시점에 못 박는다 — 게임 상태(RTDB)에 두면
+  // 최종 그룹이 정해진 뒤 비중을 바꿔 자기 그룹 몫을 키울 수 있다.
+  let gw = [];
+  if (kind === 'league') {
+    gw = (Array.isArray(groupWeights) ? groupWeights : []).map((n) => Math.floor(Number(n) || 0));
+    if (gw.some((n) => n < 0)) throw new HttpsError('invalid-argument', '그룹 비중은 음수일 수 없습니다.');
   }
 
   const uSnap = await db.doc(`users/${userId}`).get();
@@ -1789,6 +1811,8 @@ export const holdemCreate = onCall(async (req) => {
     hostName: uSnap.data().name || userId,
     buyIn: bi,
     payouts: pct,
+    groupWeights: gw,
+    maxEntries: cap,
     escrow: 0,
     entries: {},
     status: 'open',
@@ -1817,6 +1841,17 @@ export const holdemJoin = onCall(async (req) => {
       throw new HttpsError('failed-precondition', `참가할 수 있는 상태가 아닙니다(현재: ${g.status}).`);
     }
 
+    // ① 횟수 제동. 비용보다 먼저 본다 — 무료 대회는 잔액이 막아 주지 않는다.
+    const cap = g.maxEntries;
+    const already = (g.entries || {})[userId] || 0;
+    if (cap !== null && cap !== undefined) {
+      if (cap === 0) throw new HttpsError('failed-precondition', '참가가 허용되지 않는 게임입니다.');
+      if (already >= cap) {
+        throw new HttpsError('failed-precondition', `참가 횟수를 모두 썼습니다. (${cap}회 제한)`);
+      }
+    }
+
+    // ② 잔액 제동. 바이인이 있을 때만 걸린다.
     const bi = g.buyIn || 0;
     const balance = user.balance || 0;
     if (bi > 0 && balance < bi) {
@@ -1875,6 +1910,45 @@ export const holdemRefund = onCall(async (req) => {
   });
 });
 
+// ── 운영자: 상금풀 충전 (하우스풀 → 에스크로) ─────────────────
+//   무료 대회(바이인 0P)는 참가비가 안 모이니 상금 재원이 따로 필요하다.
+//   하우스풀에서 옮기므로 Σbalance + housePool + Σescrow 는 그대로다.
+export const holdemFund = onCall(async (req) => {
+  assertAdmin(req);
+  const { gid, amount, memo } = req.data || {};
+  const amt = Math.floor(Number(amount));
+  if (!gid) throw new HttpsError('invalid-argument', 'gid 누락.');
+  if (!Number.isInteger(amt) || amt === 0) {
+    throw new HttpsError('invalid-argument', '충전 포인트는 0이 아닌 정수여야 합니다.');
+  }
+
+  return db.runTransaction(async (tx) => {
+    const gRef = holdemRef(gid);
+    const [gSnap, bSnap] = await Promise.all([tx.get(gRef), tx.get(boardRef())]);
+    if (!gSnap.exists) throw new HttpsError('not-found', '게임을 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.status === 'settled' || g.status === 'canceled') {
+      throw new HttpsError('failed-precondition', '이미 끝난 게임에는 충전할 수 없습니다.');
+    }
+    const pool = (bSnap.data() || {}).housePool || 0;
+    if (amt > 0 && pool < amt) {
+      throw new HttpsError('failed-precondition', `하우스풀이 부족합니다. (보유 ${pool}P, 필요 ${amt}P)`);
+    }
+    // 회수(음수)는 이미 들어온 에스크로보다 많이 빼낼 수 없다.
+    if (amt < 0 && (g.escrow || 0) + amt < 0) {
+      throw new HttpsError('failed-precondition', `에스크로가 부족합니다. (보유 ${g.escrow || 0}P)`);
+    }
+
+    tx.set(boardRef(), { housePool: FieldValue.increment(-amt) }, { merge: true });
+    tx.update(gRef, { escrow: FieldValue.increment(amt) });
+    tx.set(db.collection('ledger').doc(), {
+      type: 'holdem_fund', holdemGameId: gid, houseDelta: -amt,
+      memo: String(memo || ''), ts: FieldValue.serverTimestamp(),
+    });
+    return { gid, funded: amt, escrow: (g.escrow || 0) + amt };
+  });
+});
+
 // ── 정산: RTDB 최종 상태를 함수가 직접 읽어 에스크로를 배분 ─────
 //   멱등 — 이미 settled 면 아무 일도 하지 않는다(어느 클라이언트가 호출해도 안전).
 export const holdemSettle = onCall(async (req) => {
@@ -1898,6 +1972,17 @@ export const holdemSettle = onCall(async (req) => {
   let rows;
   if (g.kind === 'private') {
     rows = privatePayouts(seatsFromRoom(state, paidIds), g.escrow || 0);
+  } else if (g.kind === 'league') {
+    if (state.phase !== 'finished') {
+      throw new HttpsError('failed-precondition', '아직 끝나지 않은 리그입니다.');
+    }
+    if (!Array.isArray(state.groups) || state.groups.length === 0) {
+      throw new HttpsError('failed-precondition', '최종 그룹이 정해지지 않았습니다.');
+    }
+    rows = leaguePayouts(
+      state.groups, state.finalResults || [], state.entrants || {},
+      paidIds, g.escrow || 0, g.groupWeights || [], g.payouts || [],
+    );
   } else {
     if (state.status !== 'finished') {
       throw new HttpsError('failed-precondition', '아직 끝나지 않은 토너먼트입니다.');

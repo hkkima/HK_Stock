@@ -2,7 +2,7 @@
 // (CONVENTIONS 불변식 7. 여기가 깨지면 포인트가 생기거나 증발한다.)
 import { describe, it, expect } from 'vitest';
 import {
-  privatePayouts, tournamentPayouts, seatsFromRoom, standingsFromTournament,
+  privatePayouts, tournamentPayouts, leaguePayouts, seatsFromRoom, standingsFromTournament,
 } from '../../functions/holdem.js';
 
 const sum = (rows) => rows.reduce((s, r) => s + r.payout, 0);
@@ -140,5 +140,56 @@ describe('정산 대상 추출 — 바이인을 낸 사람만', () => {
     const tour = { standings: { x: { uid: 'a', name: 'A', rank: 1 }, y: { uid: 'ghost', rank: 2 } } };
     const rows = tournamentPayouts(standingsFromTournament(tour, ['a']), 500, [70, 30]);
     expect(sum(rows)).toBe(500);
+  });
+});
+
+describe('리그 정산 — 그룹별 차등, 합계는 에스크로', () => {
+  const GROUPS = [['a', 'b'], ['c', 'd'], ['e', 'f']];
+  const RESULTS = [
+    { uid: 'a', rank: 1 }, { uid: 'b', rank: 2 },
+    { uid: 'c', rank: 1 }, { uid: 'd', rank: 2 },
+    { uid: 'e', rank: 1 }, { uid: 'f', rank: 2 },
+  ];
+  const ENT = { a: { name: 'A' }, b: { name: 'B' }, c: { name: 'C' }, d: { name: 'D' }, e: { name: 'E' }, f: { name: 'F' } };
+  const ALL = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const W = [50, 30, 20];
+  const P = [70, 30];
+
+  it('어떤 상금풀이든 합계가 정확히 같다', () => {
+    for (const pool of [0, 1, 7, 999, 10000, 123457]) {
+      const rows = leaguePayouts(GROUPS, RESULTS, ENT, ALL, pool, W, P);
+      expect(sum(rows)).toBe(pool);
+    }
+  });
+
+  it('상위 그룹 1위가 하위 그룹 1위보다 많이 받는다', () => {
+    const rows = leaguePayouts(GROUPS, RESULTS, ENT, ALL, 10000, W, P);
+    const g = (u) => rows.find((r) => r.userId === u).payout;
+    expect(g('a')).toBeGreaterThan(g('c'));
+    expect(g('c')).toBeGreaterThan(g('e'));
+  });
+
+  it('참가 등록 안 된 uid 는 그룹에 있어도 못 받는다', () => {
+    const rows = leaguePayouts(GROUPS, RESULTS, ENT, ['a', 'b', 'c', 'd'], 10000, W, P);
+    expect(rows.find((r) => r.userId === 'e')).toBeUndefined();
+    expect(sum(rows)).toBe(10000);
+  });
+
+  it('그룹이 통째로 비어도 상금이 증발하지 않는다', () => {
+    const rows = leaguePayouts(GROUPS, RESULTS, ENT, ['a', 'b'], 10000, W, P);
+    expect(sum(rows)).toBe(10000);
+  });
+
+  it('순위가 없는 사람(결석)은 뒤로 밀리고 배분은 계속 맞는다', () => {
+    const partial = [{ uid: 'a', rank: 1 }, { uid: 'c', rank: 1 }, { uid: 'e', rank: 1 }];
+    const rows = leaguePayouts(GROUPS, partial, ENT, ALL, 9999, W, P);
+    expect(sum(rows)).toBe(9999);
+    expect(rows.find((r) => r.userId === 'a').payout)
+      .toBeGreaterThan(rows.find((r) => r.userId === 'b').payout);
+  });
+
+  it('그룹 비중을 안 주면 균등 분배하되 합계는 유지', () => {
+    const rows = leaguePayouts(GROUPS, RESULTS, ENT, ALL, 10000, [], P);
+    expect(sum(rows)).toBe(10000);
   });
 });
