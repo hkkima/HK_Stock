@@ -178,5 +178,17 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
+
+    // ── 홀덤 리그 (holdem-league) ────────────────────────────
+    //   게임 상태(좌석·핸드·베팅)는 같은 프로젝트의 Realtime Database 에 있고,
+    //   여기 있는 건 '돈' 뿐이다 — 바이인 에스크로(holdemGames/{gid}.escrow)와
+    //   개설 시점에 고정된 정산 파라미터(buyIn·payouts).
+    //   ★쓰기는 Cloud Functions(holdemCreate/Join/Refund/Settle/Revert/Cancel)만★.
+    //   클라가 여기를 못 쓰기 때문에, RTDB 게임 상태를 조작해도 배분 비율과
+    //   '누가 실제로 냈는지'는 바꿀 수 없다 → 포인트를 만들어 낼 수 없다.
+    match /holdemGames/{gid} {
+      allow read: if true;
+      allow write: if false;
+    }
   }
 }

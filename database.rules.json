@@ -1,0 +1,25 @@
+// Realtime Database 는 홀덤 리그(holdem-league)의 게임 상태 전용이다.
+//
+// 지갑·포인트는 여기에 절대 두지 않는다 — 전부 Firestore users/{id}.balance 이고
+// 이동은 Cloud Functions 만 한다(CONVENTIONS 불변식 1).
+//
+// 그래서 이 아래는 익명인증만 통과하면 읽고 쓸 수 있다: 클라이언트들이 서로의
+// 게임 상태를 직접 갱신하는 P2P 구조라 세분화해도 실익이 없고, 조작해도 돈은
+// 못 만든다(배분율과 참가자 명단은 Firestore 에 있고 정산 함수가 그것만 믿는다).
+// 다만 상대 홀 카드를 콘솔로 들여다보는 것은 막지 못한다 — README 보안 모델 참고.
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "holdem": {
+      "rooms": {
+        ".read": "auth != null",
+        "$rid": { ".write": "auth != null" }
+      },
+      "tournaments": {
+        ".read": "auth != null",
+        "$tid": { ".write": "auth != null" }
+      }
+    }
+  }
+}

@@ -8,10 +8,12 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getDatabase } from 'firebase-admin/database';
 import { quoteBuy, quoteSell, nextAvgCost, priceAdjustDelta, sellFee, rangeSum } from './market.js';
 import { generateNews, NEWS_TICK_PROB } from './news.js';
 import { applyTick } from './tick.js';
 import { findEventPreset, renderEventHeadline } from './events.js';
+import { privatePayouts, tournamentPayouts, seatsFromRoom, standingsFromTournament } from './holdem.js';
 
 // ★ 프론트 VITE_FUNCTIONS_REGION 과 일치(서울 리전) ★
 setGlobalOptions({ region: 'asia-northeast3' });
@@ -1725,4 +1727,283 @@ export const setCorpServices = onCall(async (req) => {
   if (!services || typeof services !== 'object') throw new HttpsError('invalid-argument', 'services 객체 필요.');
   await db.doc('meta/corpServices').set({ services, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
   return { count: Object.keys(services).length };
+});
+
+// ═════════════════════════════════════════════════════════════
+// 홀덤 리그 — 바이인 에스크로 · 정산
+//
+//   게임 상태(좌석·핸드·베팅)는 RTDB(같은 프로젝트), 지갑은 여기 Firestore.
+//   포인트가 움직이는 지점은 전부 이 함수들뿐이다(불변식 1).
+//
+//   총량보존(불변식 7): 바이인은 지갑 → holdemGames/{gid}.escrow 로 이동하고,
+//   정산은 escrow 를 '전액' 참가자에게 되돌린다. 배분 산술은 holdem.js.
+//   Σescrow 가 보존식에 들어가므로 진행 중에도 총량이 맞는다.
+//
+//   ⚠️ 신뢰 경계: 게임 상태는 클라이언트가 쓴다. 그래서 정산 함수는
+//   (a) 돈 파라미터(buyIn·payouts)를 개설 시점 Firestore 값으로만 쓰고,
+//   (b) 바이인을 실제로 낸 uid 에게만 지급하며,
+//   (c) 지급 합계를 escrow 로 강제한다.
+//   → 참가자끼리 순위를 조작할 여지는 남지만 포인트를 '만들' 수는 없다.
+// ═════════════════════════════════════════════════════════════
+
+const holdemRef = (gid) => db.doc(`holdemGames/${gid}`);
+
+function assertHoldemKind(kind) {
+  if (kind !== 'private' && kind !== 'tournament') {
+    throw new HttpsError('invalid-argument', "kind 는 'private' 또는 'tournament' 여야 합니다.");
+  }
+}
+
+// ── 개설: 에스크로 그릇을 만든다(포인트 이동 없음) ────────────
+export const holdemCreate = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, kind, rtdbPath, name, buyIn, payouts } = req.data || {};
+  assertHoldemKind(kind);
+  if (!userId) throw new HttpsError('invalid-argument', 'userId가 필요합니다.');
+  if (!rtdbPath || !/^holdem\/(rooms|tournaments)\/[A-Za-z0-9_-]+$/.test(String(rtdbPath))) {
+    throw new HttpsError('invalid-argument', 'rtdbPath 형식이 올바르지 않습니다.');
+  }
+  const bi = Math.floor(Number(buyIn));
+  if (!Number.isInteger(bi) || bi < 0) throw new HttpsError('invalid-argument', '바이인은 0 이상 정수여야 합니다.');
+
+  let pct = [];
+  if (kind === 'tournament') {
+    pct = (Array.isArray(payouts) ? payouts : []).map((n) => Math.floor(Number(n) || 0));
+    if (!pct.length) throw new HttpsError('invalid-argument', '상금 배분표가 필요합니다.');
+    if (pct.some((n) => n < 0)) throw new HttpsError('invalid-argument', '배분율은 음수일 수 없습니다.');
+    if (pct.reduce((s, n) => s + n, 0) !== 100) {
+      throw new HttpsError('invalid-argument', '상금 배분표 합계가 100이어야 합니다.');
+    }
+  }
+
+  const uSnap = await db.doc(`users/${userId}`).get();
+  if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+  requirePin(uSnap.data(), pinHash);
+
+  const gRef = db.collection('holdemGames').doc();
+  await gRef.set({
+    kind,
+    rtdbPath: String(rtdbPath),
+    name: String(name || '').trim() || (kind === 'tournament' ? '토너먼트' : '사설 방'),
+    hostId: userId,
+    hostName: uSnap.data().name || userId,
+    buyIn: bi,
+    payouts: pct,
+    escrow: 0,
+    entries: {},
+    status: 'open',
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return { gid: gRef.id };
+});
+
+// ── 참가: 지갑 → 에스크로 ─────────────────────────────────────
+//   리엔트리도 같은 경로. entries[userId] 가 낸 횟수.
+export const holdemJoin = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, gid } = req.data || {};
+  if (!userId || !gid) throw new HttpsError('invalid-argument', 'userId/gid 누락.');
+
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const gRef = holdemRef(gid);
+    const [uSnap, gSnap] = await Promise.all([tx.get(uRef), tx.get(gRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    const user = uSnap.data();
+    requirePin(user, pinHash);
+    if (!gSnap.exists) throw new HttpsError('not-found', '게임을 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.status !== 'open' && g.status !== 'running') {
+      throw new HttpsError('failed-precondition', `참가할 수 있는 상태가 아닙니다(현재: ${g.status}).`);
+    }
+
+    const bi = g.buyIn || 0;
+    const balance = user.balance || 0;
+    if (bi > 0 && balance < bi) {
+      throw new HttpsError('failed-precondition', `포인트가 부족합니다. (보유 ${balance}P, 필요 ${bi}P)`);
+    }
+
+    if (bi > 0) {
+      tx.update(uRef, { balance: FieldValue.increment(-bi) });
+      tx.update(gRef, {
+        escrow: FieldValue.increment(bi),
+        [`entries.${userId}`]: FieldValue.increment(1),
+      });
+      tx.set(db.collection('ledger').doc(), {
+        type: 'holdem_buyin', holdemGameId: gid, userId, delta: -bi, ts: FieldValue.serverTimestamp(),
+      });
+    } else {
+      // 무료 방도 참가 명단에는 올려야 정산 대상 필터가 동작한다.
+      tx.update(gRef, { [`entries.${userId}`]: FieldValue.increment(1) });
+    }
+    return { gid, buyIn: bi, newBalance: balance - bi };
+  });
+});
+
+// ── 참가 취소: 첫 핸드 전이면 낸 만큼 전액 환불 ────────────────
+export const holdemRefund = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, gid } = req.data || {};
+  if (!userId || !gid) throw new HttpsError('invalid-argument', 'userId/gid 누락.');
+
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const gRef = holdemRef(gid);
+    const [uSnap, gSnap] = await Promise.all([tx.get(uRef), tx.get(gRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    if (!gSnap.exists) throw new HttpsError('not-found', '게임을 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.status !== 'open') {
+      throw new HttpsError('failed-precondition', '이미 시작된 게임은 개별 환불할 수 없습니다.');
+    }
+    const count = (g.entries || {})[userId] || 0;
+    if (count <= 0) throw new HttpsError('failed-precondition', '참가 기록이 없습니다.');
+
+    const refund = (g.buyIn || 0) * count;
+    if (refund > 0) {
+      tx.update(uRef, { balance: FieldValue.increment(refund) });
+      tx.set(db.collection('ledger').doc(), {
+        type: 'holdem_refund', holdemGameId: gid, userId, delta: refund, ts: FieldValue.serverTimestamp(),
+      });
+    }
+    tx.update(gRef, {
+      escrow: FieldValue.increment(-refund),
+      [`entries.${userId}`]: FieldValue.delete(),
+    });
+    return { gid, refund };
+  });
+});
+
+// ── 정산: RTDB 최종 상태를 함수가 직접 읽어 에스크로를 배분 ─────
+//   멱등 — 이미 settled 면 아무 일도 하지 않는다(어느 클라이언트가 호출해도 안전).
+export const holdemSettle = onCall(async (req) => {
+  assertAuth(req);
+  const { gid } = req.data || {};
+  if (!gid) throw new HttpsError('invalid-argument', 'gid 누락.');
+
+  const gSnap = await holdemRef(gid).get();
+  if (!gSnap.exists) throw new HttpsError('not-found', '게임을 찾을 수 없습니다.');
+  const g = gSnap.data();
+  if (g.status === 'settled') return { gid, alreadySettled: true, settlement: g.settlement || [] };
+  if (g.status === 'canceled') throw new HttpsError('failed-precondition', '취소된 게임입니다.');
+
+  // 게임 상태는 트랜잭션 밖에서 읽는다(RTDB 는 Firestore 트랜잭션에 못 들어감).
+  // 아래 트랜잭션이 status 를 다시 검사하므로 두 번 정산되지는 않는다.
+  const node = await getDatabase().ref(g.rtdbPath).get();
+  if (!node.exists()) throw new HttpsError('not-found', '게임 상태를 찾을 수 없습니다.');
+  const state = node.val();
+  const paidIds = Object.keys(g.entries || {});
+
+  let rows;
+  if (g.kind === 'private') {
+    rows = privatePayouts(seatsFromRoom(state, paidIds), g.escrow || 0);
+  } else {
+    if (state.status !== 'finished') {
+      throw new HttpsError('failed-precondition', '아직 끝나지 않은 토너먼트입니다.');
+    }
+    rows = tournamentPayouts(standingsFromTournament(state, paidIds), g.escrow || 0, g.payouts || []);
+  }
+
+  const total = rows.reduce((s, r) => s + r.payout, 0);
+  if (total !== (g.escrow || 0)) {
+    // 여기서 걸리면 배분 산술이 깨진 것 — 지급하지 않고 멈춘다. 포인트가 새는 것보다 낫다.
+    throw new HttpsError('internal', `배분 합계(${total})가 에스크로(${g.escrow || 0})와 다릅니다.`);
+  }
+
+  await db.runTransaction(async (tx) => {
+    const cur = await tx.get(holdemRef(gid));
+    if (cur.data().status === 'settled') return;      // 경합에서 진 호출 — 무해하게 종료
+    for (const r of rows) {
+      if (r.payout <= 0) continue;
+      tx.update(db.doc(`users/${r.userId}`), { balance: FieldValue.increment(r.payout) });
+      tx.set(db.collection('ledger').doc(), {
+        type: 'holdem_payout', holdemGameId: gid, userId: r.userId, delta: r.payout, ts: FieldValue.serverTimestamp(),
+      });
+    }
+    tx.update(holdemRef(gid), {
+      status: 'settled',
+      escrow: 0,
+      settlement: rows,
+      settledAt: FieldValue.serverTimestamp(),
+    });
+  });
+  return { gid, settlement: rows };
+});
+
+// ── 운영자: 정산 되돌리기 ─────────────────────────────────────
+//   지급분을 회수해 에스크로로 되돌린다. 잔액이 모자라면 있는 만큼만 회수하고
+//   부족분은 housePool 이 메운다 — 총량은 어떤 경우에도 보존된다.
+export const holdemRevert = onCall(async (req) => {
+  assertAdmin(req);
+  const { gid, memo } = req.data || {};
+  if (!gid) throw new HttpsError('invalid-argument', 'gid 누락.');
+
+  return db.runTransaction(async (tx) => {
+    const gRef = holdemRef(gid);
+    const gSnap = await tx.get(gRef);
+    if (!gSnap.exists) throw new HttpsError('not-found', '게임을 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.status !== 'settled') throw new HttpsError('failed-precondition', '정산된 게임만 되돌릴 수 있습니다.');
+    const rows = (g.settlement || []).filter((r) => r.payout > 0);
+
+    const snaps = await Promise.all(rows.map((r) => tx.get(db.doc(`users/${r.userId}`))));
+    let shortfall = 0;
+    let recovered = 0;
+    rows.forEach((r, i) => {
+      const s = snaps[i];
+      const bal = s.exists ? (s.data().balance || 0) : 0;
+      const take = Math.min(bal, r.payout);
+      shortfall += r.payout - take;
+      recovered += take;
+      if (take > 0) {
+        tx.update(db.doc(`users/${r.userId}`), { balance: FieldValue.increment(-take) });
+        tx.set(db.collection('ledger').doc(), {
+          type: 'holdem_revert', holdemGameId: gid, userId: r.userId, delta: -take,
+          memo: String(memo || ''), ts: FieldValue.serverTimestamp(),
+        });
+      }
+    });
+    // 다 못 걷은 만큼은 하우스풀이 부담 → Σbalance + housePool + Σescrow 불변.
+    if (shortfall > 0) tx.set(boardRef(), { housePool: FieldValue.increment(-shortfall) }, { merge: true });
+
+    tx.update(gRef, {
+      status: 'running',
+      escrow: recovered + shortfall,
+      settlement: FieldValue.delete(),
+      settledAt: FieldValue.delete(),
+      revertedAt: FieldValue.serverTimestamp(),
+    });
+    return { gid, reverted: rows.length, shortfall };
+  });
+});
+
+// ── 운영자: 게임 취소 → 낸 사람에게 전액 환불 ──────────────────
+export const holdemCancel = onCall(async (req) => {
+  assertAdmin(req);
+  const { gid } = req.data || {};
+  if (!gid) throw new HttpsError('invalid-argument', 'gid 누락.');
+
+  return db.runTransaction(async (tx) => {
+    const gRef = holdemRef(gid);
+    const gSnap = await tx.get(gRef);
+    if (!gSnap.exists) throw new HttpsError('not-found', '게임을 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.status === 'settled') throw new HttpsError('failed-precondition', '이미 정산된 게임입니다.');
+    if (g.status === 'canceled') return { gid, alreadyCanceled: true };
+
+    const bi = g.buyIn || 0;
+    let refunded = 0;
+    for (const [userId, count] of Object.entries(g.entries || {})) {
+      const amount = bi * (count || 0);
+      if (amount <= 0) continue;
+      refunded += amount;
+      tx.update(db.doc(`users/${userId}`), { balance: FieldValue.increment(amount) });
+      tx.set(db.collection('ledger').doc(), {
+        type: 'holdem_refund', holdemGameId: gid, userId, delta: amount, ts: FieldValue.serverTimestamp(),
+      });
+    }
+    tx.update(gRef, { status: 'canceled', escrow: 0, canceledAt: FieldValue.serverTimestamp() });
+    return { gid, refunded };
+  });
 });
