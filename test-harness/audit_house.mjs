@@ -16,10 +16,14 @@ const db = getFirestore(app);
 const fmt = (n) => Math.round(n).toLocaleString();
 const board = (await getDoc(doc(db, 'meta', 'stockBoard'))).data() || {};
 const stocks = (await getDocs(collection(db, 'stocks'))).docs.map((d) => ({ id: d.id, ...d.data() }));
+const holdemGames = (await getDocs(collection(db, 'holdemGames'))).docs.map((d) => d.data());
 const led = (await getDocs(collection(db, 'ledger'))).docs.map((d) => d.data());
 
 const housePool = Math.round(board.housePool || 0);
 const reserveSum = Math.round(stocks.reduce((a, s) => a + (s.reserve || 0), 0));
+// 진행 중인 홀덤 게임에 묶인 포인트. 총량보존 집합에 들어가므로,
+// 지갑 합계만 보고 "포인트가 줄었다" 고 판단하면 틀린다.
+const holdemEscrow = Math.round(holdemGames.reduce((a, g) => a + (g.escrow || 0), 0));
 
 // ── type 별 하우스 영향 집계 (부호: +면 하우스 충전, −면 드레인) ──
 const known = {}; // type -> { houseDelta, count }
@@ -52,6 +56,10 @@ for (const e of led) {
     case 'operator_reseed': break;                 // 까미 재시드(통제 발행) — 지갑만 변경, housePool 무영향
     case 'gig_post': case 'gig_cancel': case 'gig_settle':
     case 'gig_resolve_release': case 'gig_resolve_refund': break; // 지갑↔에스크로 — housePool 무영향
+    // 홀덤: 지갑↔holdemGames.escrow 이동뿐이라 housePool 무영향.
+    case 'holdem_buyin': case 'holdem_payout': case 'holdem_refund': case 'holdem_revert': break;
+    // 예외 하나 — 정산 되돌리기에서 회수 못 한 몫은 하우스풀이 메운다.
+    case 'holdem_shortfall': bump('holdem_shortfall', (e.houseDelta || 0)); break;
     // ── delta 미기록: 잔차로 감. 대신 편중 집계 ──
     case 'impact_news': {
       residualCount += 1;
@@ -80,10 +88,11 @@ const residual = housePool - knownSum;
 console.log('════════ 하우스풀 적자 원인 분해 ════════\n');
 console.log('현재 하우스풀 :', fmt(housePool));
 console.log('리저브 합계   :', fmt(reserveSum));
+console.log('홀덤 에스크로 :', fmt(holdemEscrow), `(진행 중 ${holdemGames.filter((g) => (g.escrow || 0) > 0).length}게임)`);
 console.log('ledger 항목수 :', led.length, '\n');
 
 console.log('── ledger 로 정확 집계되는 경로 (부호=하우스 방향) ──');
-const order = ['mint', 'burn', 'delist', 'operator_clawback', 'trade_fee', 'dp_convert', 'news(auto)', 'dividend', 'weekly_dividend', 'help_grant', 'quiz_reward', 'option_grant', 'price_adjust'];
+const order = ['mint', 'burn', 'delist', 'operator_clawback', 'trade_fee', 'dp_convert', 'news(auto)', 'dividend', 'weekly_dividend', 'help_grant', 'quiz_reward', 'holdem_shortfall', 'option_grant', 'price_adjust'];
 for (const t of order) {
   const k = known[t]; if (!k) continue;
   const sign = k.houseDelta >= 0 ? '＋충전' : '－드레인';

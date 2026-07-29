@@ -1965,7 +1965,15 @@ export const holdemRevert = onCall(async (req) => {
       }
     });
     // 다 못 걷은 만큼은 하우스풀이 부담 → Σbalance + housePool + Σescrow 불변.
-    if (shortfall > 0) tx.set(boardRef(), { housePool: FieldValue.increment(-shortfall) }, { merge: true });
+    // houseDelta 를 원장에 남겨야 audit_house 가 이 드레인을 잔차가 아니라
+    // 이름 있는 항목으로 집계한다(안 그러면 원인 불명 적자로 보인다).
+    if (shortfall > 0) {
+      tx.set(boardRef(), { housePool: FieldValue.increment(-shortfall) }, { merge: true });
+      tx.set(db.collection('ledger').doc(), {
+        type: 'holdem_shortfall', holdemGameId: gid, houseDelta: -shortfall,
+        memo: String(memo || ''), ts: FieldValue.serverTimestamp(),
+      });
+    }
 
     tx.update(gRef, {
       status: 'running',
