@@ -19,6 +19,10 @@
       "tournaments": {
         ".read": "auth != null",
         "$tid": { ".write": "auth != null" }
+      },
+      "leagues": {
+        ".read": "auth != null",
+        "$lid": { ".write": "auth != null" }
       }
     }
   }
