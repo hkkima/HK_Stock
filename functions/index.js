@@ -47,6 +47,10 @@ function assertAdmin(req) {
     throw new HttpsError('permission-denied', '운영자만 가능합니다.');
   }
 }
+/** 던지지 않는 판정 — 운영자와 수강생이 같은 함수를 다르게 타야 할 때 쓴다. */
+function isAdminReq(req) {
+  try { assertAdmin(req); return true; } catch { return false; }
+}
 
 // ── 참가자: 매수/매도 (본드커브 권위 체결) ─────────────────
 export const trade = onCall(async (req) => {
@@ -1798,9 +1802,19 @@ export const holdemCreate = onCall(async (req) => {
     if (gw.some((n) => n < 0)) throw new HttpsError('invalid-argument', '그룹 비중은 음수일 수 없습니다.');
   }
 
-  const uSnap = await db.doc(`users/${userId}`).get();
-  if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
-  requirePin(uSnap.data(), pinHash);
+  // 개설자는 둘 중 하나다.
+  //   · 수강생 — `users/{id}` + PIN 으로 본인 확인 (사설 방)
+  //   · 운영자 — Google 로그인. ★`users/` 문서가 없다★ (공식 대회·리그)
+  // 운영자에게 참가자 계정을 요구하면 공식 대회를 아무도 못 연다.
+  let hostName;
+  if (isAdminReq(req)) {
+    hostName = String(req.auth?.token?.email || '운영자');
+  } else {
+    const uSnap = await db.doc(`users/${userId}`).get();
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    requirePin(uSnap.data(), pinHash);
+    hostName = uSnap.data().name || userId;
+  }
 
   const gRef = db.collection('holdemGames').doc();
   await gRef.set({
@@ -1808,7 +1822,7 @@ export const holdemCreate = onCall(async (req) => {
     rtdbPath: String(rtdbPath),
     name: String(name || '').trim() || (kind === 'tournament' ? '토너먼트' : '사설 방'),
     hostId: userId,
-    hostName: uSnap.data().name || userId,
+    hostName,
     buyIn: bi,
     payouts: pct,
     groupWeights: gw,
