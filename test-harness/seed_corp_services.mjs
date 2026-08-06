@@ -20,15 +20,16 @@ const db = getFirestore();
 const services = {
   // ── T1 까미 노동 (공급 무제한 — 접수 후 까미 작업 큐에 pending 으로 쌓인다) ──
   //   ★납품이 필요한 상품은 전부 pending★ — 즉시 fulfilled 로 두면 미납품 시 환불 경로가 없다.
-  doc_schedule_feedback: { name: '문서 및 일정 피드백', tier: 'T1', price: 20000, needsApproval: true, phase: '사전기획', desc: '기획서·일정표를 읽고 구조와 리스크를 짚어 드립니다.' },
-  play_feedback: { name: '플레이 피드백', tier: 'T1', price: 30000, needsApproval: true, phase: 'QA·폴리싱', desc: '빌드를 직접 플레이하고 체감 문제를 정리해 드립니다.' },
-  research: { name: '까미 리서치 대행', tier: 'T1', price: 35000, needsApproval: true, phase: '사전기획', desc: '레퍼런스·시장·경쟁작 조사를 대행합니다.' },
-  asset_set: { name: '에셋 제작 1세트', tier: 'T1', price: 50000, needsApproval: true, phase: '개발', desc: '요청 사양에 맞춘 에셋 한 세트를 제작합니다.' },
+  //   2026-08-06 T1·T2 인상: 기존가 ×1.3~1.7 범위에서 1.5배에 가장 가까운 5,000P 배수로 재책정.
+  doc_schedule_feedback: { name: '문서 및 일정 피드백', tier: 'T1', price: 30000, needsApproval: true, phase: '사전기획', desc: '기획서·일정표를 읽고 구조와 리스크를 짚어 드립니다.' },
+  play_feedback: { name: '플레이 피드백', tier: 'T1', price: 45000, needsApproval: true, phase: 'QA·폴리싱', desc: '빌드를 직접 플레이하고 체감 문제를 정리해 드립니다.' },
+  research: { name: '까미 리서치 대행', tier: 'T1', price: 55000, needsApproval: true, phase: '사전기획', desc: '레퍼런스·시장·경쟁작 조사를 대행합니다.' },
+  asset_set: { name: '에셋 제작 1세트', tier: 'T1', price: 75000, needsApproval: true, phase: '개발', desc: '요청 사양에 맞춘 에셋 한 세트를 제작합니다.' },
 
   // ── T2 강사 직접 (희소 · 일정 협의 필요 → 승인제) ──
-  consult_20: { name: '컨설팅 20분', tier: 'T2', price: 60000, needsApproval: true, phase: '전 국면', desc: '강사와 20분 1:1. 주제를 미리 적어 주세요.' },
-  design_review: { name: '기획 심층 리뷰', tier: 'T2', price: 80000, needsApproval: true, phase: '사전기획', desc: '기획 문서를 정독하고 첨삭·구조 제안을 드립니다.' },
-  sprint_review: { name: '스프린트 단위 심층 점검', tier: 'T2', price: 90000, needsApproval: true, phase: '개발', desc: '스프린트 산출물 전반을 점검하고 다음 스프린트 방향을 잡아 드립니다.' },
+  consult_20: { name: '컨설팅 20분', tier: 'T2', price: 90000, needsApproval: true, phase: '전 국면', desc: '강사와 20분 1:1. 주제를 미리 적어 주세요.' },
+  design_review: { name: '기획 심층 리뷰', tier: 'T2', price: 120000, needsApproval: true, phase: '사전기획', desc: '기획 문서를 정독하고 첨삭·구조 제안을 드립니다.' },
+  sprint_review: { name: '스프린트 단위 심층 점검', tier: 'T2', price: 135000, needsApproval: true, phase: '개발', desc: '스프린트 산출물 전반을 점검하고 다음 스프린트 방향을 잡아 드립니다.' },
 
   // ── T3 까미 비전스 계약 (팀 전용 — 개인 최대 잔고 151,629 를 넘도록 책정) ──
   promo_contract: {
