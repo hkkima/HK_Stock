@@ -1,5 +1,10 @@
 # 📈 HK_Stock — 수강생 가상 주식판
 
+> ★크로스-리포 기준·규칙·배포 절차의 정본 = **HK_Hub `docs/GOVERNANCE.md` · `docs/CONVENTIONS.md`**★
+> 이 리포 문서와 충돌하면 Hub 문서가 이긴다. Firestore 규칙 배포는 반드시 Hub 3단계 절차
+> (`HK_Hub/tools/rules/`: check-live → merge → deploy)로만 — ★이 리포의 `firestore.rules` 는
+> 상위집합이 아니다(게임허브·카지노 블록 없음). 직배포 시 두 앱이 죽는다★.
+
 수강생(23인, 3~4인 1팀 = 1기업)을 종목으로 하는 가상 주식 시스템.
 **베팅판(HK_Betting)과 같은 포인트**를 공유하며, 시세는 학생 거래(AMM)로 움직이고
 펀더멘탈(강사 평가·근태·과제·뉴스)은 배당과 시세조정으로 반영된다.
@@ -76,7 +81,7 @@ npm test                  # AMM 엔진 단위 테스트
 ```bash
 cd functions && npm install && cd ..
 firebase use <베팅판과_같은_프로젝트ID>
-firebase deploy --only functions,firestore:rules
+firebase deploy --only functions        # ★규칙은 절대 여기에 얹지 마라 — Hub 3단계 절차로★
 ```
 
 - `functions/index.js` 의 `ADMIN_EMAILS` 와 `firestore.rules` 의 운영자 이메일,
