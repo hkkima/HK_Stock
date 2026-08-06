@@ -3,6 +3,7 @@
 수강생 가상 주식판. Vite+React+Firebase(Cloud Functions, 서울 `asia-northeast3`), GitHub Pages.
 백엔드 프로젝트 `hk-chess-betting`(★베팅판과 `users`/포인트 공유★). 라이브: `hkkima.github.io/HK_Stock`.
 
+**크로스-리포 기준의 정본은 `HK_Hub/docs/GOVERNANCE.md`·`CONVENTIONS.md`** — 이 문서와 충돌하면 Hub 가 이긴다.
 **먼저 `docs/HANDBOOK.md`(특히 §9 인수인계)를 읽어라.** 라이브 시스템(실수강생 24명·실포인트)이다.
 
 ## 절대 깨면 안 되는 불변식
@@ -11,7 +12,8 @@
 3. **`src/domain/market.js` ≡ `functions/market.js`**, **`src/domain/events.js` ≡ `functions/events.js`** (각 바이트 동일, `diff` 점검).
 4. **`base ≥ 1`** (곡선 양수). 시세 하한 = `slope × circulating`.
 5. **포인트·시세·보유 변경은 Cloud Functions(Admin SDK)만**. 클라 읽기 전용, `firestore.rules`가 차단.
-6. **`firestore.rules`는 베팅+주식 통합본**(이 리포가 진실원천). 베팅 규칙 깨지 마라.
+6. **규칙의 권위는 ★라이브 룰셋★이다 — 이 리포 사본이 아니다**(구 "이 리포가 진실원천" 규약은 2026-08-06 폐기:
+   이 판엔 게임허브·카지노 12개 match 가 없다). 배포는 반드시 `HK_Hub/tools/rules/` 3단계(check-live→merge→deploy).
 7. **★팀 = 주식★**: 별도 companies 컬렉션 없음. `stocks/{id}`에 `ceoUserId`(대표)·`corpBalance`(팀 금고)가 얹혀 있다.
    **상장=팀 생성, 상장폐지=팀 해산** → `delistStock`은 잔여 `corpBalance`를 housePool로 회수해야 총량이 보존된다(반영됨).
    총량보존 집합 = `Σ지갑 + Σreserve + **ΣcorpBalance** + housePool + Σescrow`.
