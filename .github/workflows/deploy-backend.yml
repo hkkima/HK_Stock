@@ -1,0 +1,103 @@
+# 백엔드(함수) 배포 — 로컬 머신 없이 GitHub Actions 러너에서 돌린다.
+#   HK_Gamble deploy-backend.yml 을 본뜬 HK 표준 패턴(GOVERNANCE.md §1-5: 규칙 배포 게이트 포함).
+#
+#   서비스 계정 키는 저장소 Secret(FIREBASE_SERVICE_ACCOUNT)에만 두고,
+#   러너 임시 파일로만 풀었다가 잡이 끝나면 지운다. 로그에는 남지 않는다.
+#
+#   ★규칙(firestore:rules)은 여기서 배포하지 않는다★ — 이 리포 판은 부분집합이라
+#   그대로 밀면 게임허브·카지노가 죽는다(2026-08-04 사고). 규칙은 HK_Hub/tools/rules/ 3단계로만.
+name: Deploy stock backend
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 배포 대상
+        type: choice
+        default: functions
+        options:
+          - functions
+      confirm:
+        description: 라이브 배포입니다. 진행하려면 DEPLOY 를 입력하세요
+        required: true
+        default: ''
+
+# 이 워크플로는 저장소를 읽기만 한다.
+permissions:
+  contents: read
+
+concurrency:
+  group: stock-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 확인 문구 검사
+        if: github.event.inputs.confirm != 'DEPLOY'
+        run: |
+          echo "::error::confirm 에 DEPLOY 를 정확히 입력해야 배포합니다."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # firebase-tools 는 배포 전에 functions/index.js 를 실제로 로드해 트리거를 파싱한다.
+      # functions/node_modules 가 없으면 즉시 실패하므로 별도 설치가 필요하다.
+      - name: functions 의존성 설치
+        run: npm ci --prefix functions
+
+      # ★곡선·회계가 깨진 채로 라이브에 나가지 않게★ (market·events·dpcurve·holdem·tick)
+      - name: 테스트
+        run: npm test
+
+      - name: 서비스 계정 키 준비
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$SA" ]; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT 시크릿이 없습니다."
+            echo "저장소 Settings → Secrets and variables → Actions 에서 추가하세요."
+            exit 1
+          fi
+          # 시크릿을 셸에 보간하지 않고 env 로 받아 printf 로 쓴다(인젝션 방지).
+          printf '%s' "$SA" > "$RUNNER_TEMP/sa.json"
+          chmod 600 "$RUNNER_TEMP/sa.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> "$GITHUB_ENV"
+
+      - name: firebase-tools 설치
+        run: npm i -g firebase-tools@13
+
+      - name: 배포
+        env:
+          TARGET: ${{ github.event.inputs.target }}
+        run: |
+          case "$TARGET" in
+            *rules*) echo "::error::규칙은 이 워크플로로 배포하지 않습니다(위 주석 참고)."; exit 1 ;;
+          esac
+          # ★functions 는 반드시 codebase 를 default 로 한정★
+          #   같은 프로젝트의 HK_Gamble(casino)·HK_Judge(judge) 함수를 건드리지 않기 위함.
+          ONLY=$(printf '%s' "$TARGET" | sed 's/functions/functions:default/')
+          echo "배포 대상: $ONLY"
+          # --force 는 비대화형에 필요하다. codebase 를 한정했으므로 삭제 위험 범위도 default 뿐이다.
+          firebase deploy --only "$ONLY" \
+            --project hk-chess-betting \
+            --non-interactive \
+            --force
+
+      - name: 배포 결과
+        if: success()
+        run: |
+          echo "── grantPoints·DP 함수 확인 ──"
+          firebase functions:list --project hk-chess-betting 2>/dev/null | grep -Ei "grantPoints|grantDP|convertToDP" || true
+
+      - name: 키 삭제
+        if: always()
+        run: rm -f "$RUNNER_TEMP/sa.json"
