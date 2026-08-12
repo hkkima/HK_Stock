@@ -193,7 +193,8 @@ meta/stockBoard             { housePool, news[], autoNewsEnabled }
 
 - 테스트/빌드: `npm test`(vitest, 순수 도메인만), `npm run build`, `npm run dev`(:5290). 도메인 로직은 `src/domain/market.js` 등 **순수 함수로 빼서 테스트**하는 게 컨벤션.
 - 함수 배포: `firebase deploy --only functions --project hk-chess-betting`. 간헐적 `Internal error`는 GCP 일시장애 → ~45초 후 재시도. 첫 배포 시 IAM(컴퓨트 SA에 `cloudbuild.builds.builder`) 필요했음.
-- 규칙 배포: `firebase deploy --only firestore:rules --project hk-chess-betting`.
+- 규칙 배포: ★리포 사본 직배포 금지★(이 리포 판은 게임허브·카지노 블록이 없는 부분집합 — 직배포 시 두 앱 즉사).
+  반드시 HK_Hub 3단계 절차: `HK_Hub/tools/rules/` check-live-rules → merge-rules → deploy-rules.
 - 프론트: `main` 푸시 → GitHub Actions → Pages. **리포 이름이 `HK_Stock`** 이어야 `vite.config.js` base(`/HK_Stock/`)와 맞는다.
 - ★일치시킬 3쌍★: 리전(`asia-northeast3` = 프론트 `VITE_FUNCTIONS_REGION` = `setGlobalOptions` = 배포 리전) / 운영자 이메일(functions `ADMIN_EMAILS` = rules = 프론트 `VITE_ADMIN_EMAILS`) / market.js 두 사본.
 - 셸은 PowerShell — `&&` 안 됨(`;` 또는 줄 분리). 커밋 메시지는 `-m` 여러 개로(여기서 heredoc은 자주 깨짐).

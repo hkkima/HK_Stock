@@ -13,6 +13,7 @@ import { quoteBuy, quoteSell, nextAvgCost, priceAdjustDelta, sellFee, rangeSum }
 import { generateNews, NEWS_TICK_PROB } from './news.js';
 import { applyTick } from './tick.js';
 import { findEventPreset, renderEventHeadline } from './events.js';
+import { rangeCost, DP_DEFAULTS } from './dpcurve.js';
 import {
   privatePayouts, tournamentPayouts, leaguePayouts, seatsFromRoom, standingsFromTournament,
 } from './holdem.js';
@@ -1733,6 +1734,194 @@ export const setCorpServices = onCall(async (req) => {
   if (!services || typeof services !== 'object') throw new HttpsError('invalid-argument', 'services 객체 필요.');
   await db.doc('meta/corpServices').set({ services, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
   return { count: Object.keys(services).length };
+});
+
+// ═════════════════════════════════════════════════════════════
+// DP 교환소 (HK_DP 프론트가 호출) — docs/DP-EXCHANGE-DESIGN.md §6.
+//
+//   ★배포본-리포 드리프트 복구(2026-08-06)★ — 커밋 23ea177 이 이 함수들을 추가했다고
+//   주장했지만 실제로는 리포에 들어온 적이 없고, 라이브에만 배포돼 돌고 있었다.
+//   설계문서 §6 전문과 HK_DP 클라이언트 계약(store.js)을 기준으로 재편입.
+//   ※ 이 블록이 리포에 없는 채로 `--only functions` 배포를 하면 라이브 DP 교환소가
+//     삭제된다 — 절대 이 블록을 들어내지 마라.
+// ═════════════════════════════════════════════════════════════
+
+// 학생: 포인트 → DP (개인별 2차곡선 · 주간 리셋). 대금은 housePool 로 회수(총량보존).
+export const convertToDP = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, qty } = req.data || {};
+  const q = Math.floor(Number(qty));
+  if (!userId || !Number.isInteger(q) || q <= 0) throw new HttpsError('invalid-argument', 'userId/qty(1+) 필요.');
+
+  const cfg = (await db.doc('meta/dpExchange').get()).data() || {};
+  if (cfg.convertEnabled === false) throw new HttpsError('failed-precondition', '교환이 일시 중지되었습니다.');
+  const R0 = cfg.R0 ?? DP_DEFAULTS.R0, k = cfg.k ?? DP_DEFAULTS.k, exp = cfg.exp ?? DP_DEFAULTS.exp;
+  const wk = seoulWeekKey();
+
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const aRef = db.doc(`dpAccounts/${userId}`);
+    const [uSnap, aSnap] = await Promise.all([tx.get(uRef), tx.get(aRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    const user = uSnap.data();
+    if (user.pinHash && pinHash !== user.pinHash) throw new HttpsError('permission-denied', 'PIN 불일치.');
+
+    const acc = aSnap.exists ? aSnap.data() : { dp: 0, weekKey: wk, weekCount: 0, totalBought: 0 };
+    const weekCount = acc.weekKey === wk ? (acc.weekCount || 0) : 0;       // 주 바뀌면 리셋
+    if (cfg.perWeekCap && weekCount + q > cfg.perWeekCap) throw new HttpsError('failed-precondition', `주간 한도 초과(${cfg.perWeekCap}).`);
+    if (cfg.perCourseCap && (acc.totalBought || 0) + q > cfg.perCourseCap) throw new HttpsError('failed-precondition', '과정 한도 초과.');
+
+    const cost = rangeCost(weekCount, q, R0, k, exp);
+    const balance = user.balance || 0;
+    if (cost > balance) throw new HttpsError('failed-precondition', `포인트가 부족합니다(필요 ${cost}).`);
+
+    tx.update(uRef, { balance: balance - cost });
+    tx.set(aRef, {
+      userId, dp: (acc.dp || 0) + q, weekKey: wk, weekCount: weekCount + q,
+      totalBought: (acc.totalBought || 0) + q, updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    tx.set(boardRef(), { housePool: FieldValue.increment(cost) }, { merge: true }); // 포인트 회수(보존)
+    tx.set(db.collection('ledger').doc(), { type: 'dp_convert', userId, qty: q, cost, weekKey: wk, ts: FieldValue.serverTimestamp() });
+    return { qty: q, cost, newDp: (acc.dp || 0) + q, newBalance: balance - cost, weekCount: weekCount + q };
+  });
+});
+
+// 학생: DP → 현물(고정가·재고 차감). 지급은 오프라인 → dpRedemptions pending 큐.
+export const redeemGoods = onCall(async (req) => {
+  assertAuth(req);
+  const { userId, pinHash, goodsId } = req.data || {};
+  if (!userId || !goodsId) throw new HttpsError('invalid-argument', 'userId/goodsId 필요.');
+
+  return db.runTransaction(async (tx) => {
+    const uRef = db.doc(`users/${userId}`);
+    const aRef = db.doc(`dpAccounts/${userId}`);
+    const gRef = db.doc(`dpGoods/${goodsId}`);
+    const [uSnap, aSnap, gSnap] = await Promise.all([tx.get(uRef), tx.get(aRef), tx.get(gRef)]);
+    if (!uSnap.exists) throw new HttpsError('not-found', '계정을 찾을 수 없습니다.');
+    if (uSnap.data().pinHash && pinHash !== uSnap.data().pinHash) throw new HttpsError('permission-denied', 'PIN 불일치.');
+    if (!gSnap.exists) throw new HttpsError('not-found', '상품을 찾을 수 없습니다.');
+    const g = gSnap.data();
+    if (g.active === false) throw new HttpsError('failed-precondition', '교환 불가 상품입니다.');
+    if ((g.stock || 0) <= 0) throw new HttpsError('failed-precondition', '재고가 없습니다.');
+    const acc = aSnap.exists ? aSnap.data() : { dp: 0 };
+    if ((acc.dp || 0) < g.priceDP) throw new HttpsError('failed-precondition', 'DP가 부족합니다.');
+
+    tx.update(aRef, { dp: (acc.dp || 0) - g.priceDP, updatedAt: FieldValue.serverTimestamp() });
+    tx.update(gRef, { stock: g.stock - 1 });
+    tx.set(db.collection('dpRedemptions').doc(), {
+      userId, name: uSnap.data().name || userId, goodsId, goodsName: g.name, priceDP: g.priceDP,
+      status: 'pending', ts: FieldValue.serverTimestamp(),
+    });
+    tx.set(db.collection('ledger').doc(), { type: 'dp_redeem', userId, goodsId, priceDP: g.priceDP, ts: FieldValue.serverTimestamp() });
+    return { goodsId, priceDP: g.priceDP, newDp: (acc.dp || 0) - g.priceDP };
+  });
+});
+
+// 운영자: 이벤트 DP 지급(개별/일괄). amount<0이면 회수. Hub 관리자 화면이 주 창구.
+export const grantDP = onCall(async (req) => {
+  assertAdmin(req);
+  const { userIds, amount, memo } = req.data || {};
+  const amt = Math.floor(Number(amount));
+  const ids = Array.isArray(userIds) ? userIds : [userIds];
+  if (!ids.length || !amt) throw new HttpsError('invalid-argument', 'userIds/amount 필요.');
+  const batch = db.batch();
+  for (const id of ids) {
+    batch.set(db.doc(`dpAccounts/${id}`), { userId: id, dp: FieldValue.increment(amt), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    batch.set(db.collection('ledger').doc(), { type: 'dp_grant', userId: id, amount: amt, memo: memo || '', ts: FieldValue.serverTimestamp() });
+  }
+  await batch.commit();
+  return { count: ids.length, amount: amt };
+});
+
+// 운영자: 상품 상장/수정(고정가·재고)
+export const upsertGoods = onCall(async (req) => {
+  assertAdmin(req);
+  const { id, name, priceDP, stock, active, sort } = req.data || {};
+  if (!id) throw new HttpsError('invalid-argument', 'id 필요.');
+  const patch = {};
+  if (name != null) patch.name = name;
+  if (priceDP != null) patch.priceDP = Math.max(1, Math.floor(Number(priceDP)));
+  if (stock != null) patch.stock = Math.max(0, Math.floor(Number(stock)));
+  if (active != null) patch.active = !!active;
+  if (sort != null) patch.sort = Math.floor(Number(sort));
+  await db.doc(`dpGoods/${id}`).set(patch, { merge: true });
+  return { id };
+});
+
+// 운영자: 교환 승인(오프라인 지급 완료 표시). 취소면 DP·재고 복구.
+export const fulfillRedemption = onCall(async (req) => {
+  assertAdmin(req);
+  const { id, status } = req.data || {};
+  const st = ['fulfilled', 'cancelled'].includes(status) ? status : 'fulfilled';
+  const ref = db.doc(`dpRedemptions/${id}`);
+  if (st === 'cancelled') {
+    await db.runTransaction(async (tx) => {
+      const r = (await tx.get(ref)).data();
+      if (!r || r.status !== 'pending') throw new HttpsError('failed-precondition', 'pending 건만 취소 가능.');
+      tx.update(db.doc(`dpAccounts/${r.userId}`), { dp: FieldValue.increment(r.priceDP) });
+      tx.update(db.doc(`dpGoods/${r.goodsId}`), { stock: FieldValue.increment(1) });
+      tx.update(ref, { status: 'cancelled', fulfilledAt: FieldValue.serverTimestamp() });
+    });
+  } else {
+    await ref.update({ status: 'fulfilled', fulfilledAt: FieldValue.serverTimestamp() });
+  }
+  return { id, status: st };
+});
+
+// 운영자: DP 파라미터 조정(곡선·캡·on/off) — meta/dpExchange, 재배포 불필요.
+export const setDpParams = onCall(async (req) => {
+  assertAdmin(req);
+  const allow = ['R0', 'k', 'exp', 'sellEnabled', 'perWeekCap', 'perCourseCap', 'redeemEnabled', 'convertEnabled'];
+  const patch = {};
+  for (const key of allow) if (req.data?.[key] != null) patch[key] = req.data[key];
+  await db.doc('meta/dpExchange').set(patch, { merge: true });
+  return patch;
+});
+
+// ═════════════════════════════════════════════════════════════
+// 운영자 P 지급/조정 — Hub 통합 창구 (PLAN-GRANT-CONSOLIDATION.md 1단계)
+//
+//   HK_Betting 관리자 화면의 클라이언트 직접 쓰기(updateDoc increment — 원장 없음,
+//   housePool 상계 없음)를 대체하는 서버 권위 경로. 지급분은 housePool 에서 나가고
+//   회수분은 housePool 로 돌아온다(총량보존 집합 안의 이동 — 발행이 아니다).
+//   순발행이 필요하면 mintToHouse 로 하우스를 먼저 채우고 지급하라.
+// ═════════════════════════════════════════════════════════════
+export const grantPoints = onCall(async (req) => {
+  assertAdmin(req);
+  const { userIds, all, delta, memo } = req.data || {};
+  const d = Math.floor(Number(delta));
+  if (!Number.isInteger(d) || d === 0) throw new HttpsError('invalid-argument', 'delta(0 제외 정수) 필요.');
+
+  let ids;
+  if (all === true) {
+    ids = (await db.collection('users').get()).docs.map((x) => x.id);
+  } else {
+    ids = (Array.isArray(userIds) ? userIds : [userIds]).filter(Boolean);
+    if (!ids.length) throw new HttpsError('invalid-argument', 'userIds 또는 all:true 필요.');
+    const snaps = await db.getAll(...ids.map((id) => db.doc(`users/${id}`)));
+    const missing = snaps.filter((s) => !s.exists).map((s) => s.id);
+    if (missing.length) throw new HttpsError('not-found', `없는 계정: ${missing.join(', ')}`);
+  }
+
+  // 배치마다 housePool 상계를 같은 배치에 넣는다 — 뒤 배치가 실패해도 적용된 만큼만 상계돼
+  // 총량보존이 깨지지 않는다. (200명 × [balance, ledger] + housePool = 401 ops < 500 한도)
+  const CHUNK = 200;
+  let applied = 0;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const part = ids.slice(i, i + CHUNK);
+    const batch = db.batch();
+    for (const id of part) {
+      batch.update(db.doc(`users/${id}`), { balance: FieldValue.increment(d) });
+      batch.set(db.collection('ledger').doc(), {
+        type: 'admin_grant', userId: id, amount: d, memo: memo || '', all: all === true,
+        ts: FieldValue.serverTimestamp(),
+      });
+    }
+    batch.set(boardRef(), { housePool: FieldValue.increment(-d * part.length) }, { merge: true });
+    await batch.commit();
+    applied += part.length;
+  }
+  return { count: applied, delta: d };
 });
 
 // ═════════════════════════════════════════════════════════════

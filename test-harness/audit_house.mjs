@@ -50,6 +50,7 @@ for (const e of led) {
     case 'dp_convert':    bump('dp_convert', (e.cost || 0)); break; // 지갑→하우스풀(회수·충전)
     case 'help_grant':    bump('help_grant', -(e.amount ?? e.delta ?? 0)); break; // 하우스풀→봉사자(민팅·드레인)
     case 'quiz_reward':   bump('quiz_reward', -(e.delta || 0)); break; // HK_Judge 정답보상, 하우스풀→학생(배당과 동일 회계)
+    case 'admin_grant':   bump('admin_grant', -(e.amount || 0)); break; // Hub 운영자 P 지급(+드레인)/회수(−면 충전)
     case 'buy': case 'sell': if (e.houseDelta) bump('trade_fee', e.houseDelta); break; // 매도 수수료만 house 충전(지갑→house)
     case 'dp_redeem': case 'dp_grant': break;      // DP는 별개 통화 — housePool 무영향
     case 'option_unlock': break;                   // holdings.locked 만 변경 — housePool 무영향
@@ -92,7 +93,7 @@ console.log('홀덤 에스크로 :', fmt(holdemEscrow), `(진행 중 ${holdemGam
 console.log('ledger 항목수 :', led.length, '\n');
 
 console.log('── ledger 로 정확 집계되는 경로 (부호=하우스 방향) ──');
-const order = ['mint', 'burn', 'delist', 'operator_clawback', 'trade_fee', 'dp_convert', 'news(auto)', 'dividend', 'weekly_dividend', 'help_grant', 'quiz_reward', 'holdem_shortfall', 'option_grant', 'price_adjust'];
+const order = ['mint', 'burn', 'delist', 'operator_clawback', 'trade_fee', 'dp_convert', 'news(auto)', 'dividend', 'weekly_dividend', 'help_grant', 'quiz_reward', 'admin_grant', 'holdem_shortfall', 'option_grant', 'price_adjust'];
 for (const t of order) {
   const k = known[t]; if (!k) continue;
   const sign = k.houseDelta >= 0 ? '＋충전' : '－드레인';
