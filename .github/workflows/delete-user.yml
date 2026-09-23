@@ -1,0 +1,70 @@
+# 퇴소 수강생 계정 삭제 — 로컬 머신 없이 GitHub Actions 러너에서 돌린다.
+#   test-harness/delete_user.mjs 를 감싼다. 기본은 DRY(점검만) — 실제 삭제는
+#   confirm 에 DELETE 를 입력해야만 한다.
+#
+#   ★되돌릴 수 없는 작업이다★ — users 문서가 사라진다. 그래서 두 겹으로 막는다:
+#     ① 스크립트 자체가 보유 주식·팀 대표·카지노 칩·에스크로가 있으면 중단
+#     ② 이 워크플로가 confirm 문구를 요구
+#   잔고는 증발시키지 않고 housePool 로 회수한다(총량보존).
+name: Delete user
+
+on:
+  workflow_dispatch:
+    inputs:
+      user:
+        description: 삭제할 수강생 (이름 또는 users 문서 ID)
+        required: true
+      confirm:
+        description: 점검만 하려면 비워 두세요. 실제로 지우려면 DELETE 입력
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stock-delete-user
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: test-harness 의존성 설치
+        run: npm ci --prefix test-harness || npm install --prefix test-harness
+
+      - name: 서비스 계정 키 준비
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$SA" ]; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT 시크릿이 없습니다."
+            exit 1
+          fi
+          # 시크릿을 셸에 보간하지 않고 env 로 받아 printf 로 쓴다(인젝션 방지).
+          printf '%s' "$SA" > "$RUNNER_TEMP/sa.json"
+          chmod 600 "$RUNNER_TEMP/sa.json"
+
+      - name: 실행
+        env:
+          TARGET_USER: ${{ github.event.inputs.user }}
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          cd test-harness
+          if [ "$CONFIRM" = "DELETE" ]; then
+            echo "▶ 실제 삭제 모드"
+            node delete_user.mjs "$RUNNER_TEMP/sa.json" --user "$TARGET_USER" --execute
+          else
+            echo "▶ DRY RUN (점검만). 실제로 지우려면 confirm 에 DELETE 를 입력하세요."
+            node delete_user.mjs "$RUNNER_TEMP/sa.json" --user "$TARGET_USER"
+          fi
+
+      - name: 키 삭제
+        if: always()
+        run: rm -f "$RUNNER_TEMP/sa.json"
